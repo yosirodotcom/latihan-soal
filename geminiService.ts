@@ -211,39 +211,53 @@ export const fetchImageForPrompt = async (query: string): Promise<string | null>
 
   const UNSPLASH_ACCESS_KEY = process.env.UNSPLASH_API_KEY;
 
-  if (!UNSPLASH_ACCESS_KEY) {
-    console.warn("Unsplash API Key is missing from environment. Cannot fetch image from Unsplash.");
-    return null;
+  // 1. Try Unsplash if Key exists
+  if (UNSPLASH_ACCESS_KEY) {
+    try {
+      const response = await fetch(
+        `https://api.unsplash.com/search/photos?query=${encodeURIComponent(query)}&per_page=1`,
+        {
+          headers: {
+            Authorization: `Client-ID ${UNSPLASH_ACCESS_KEY}`,
+          },
+        }
+      );
+
+      if (response.ok) {
+        const data = await response.json();
+        if (data.results && data.results.length > 0) {
+          const imageUrl = data.results[0].urls.small;
+          imageCache.set(query, imageUrl);
+          return imageUrl;
+        }
+      } else {
+        console.warn(`Unsplash API error: ${response.status}. Falling back to generative image.`);
+      }
+    } catch (error) {
+      console.error("Error fetching image from Unsplash:", error);
+    }
+  } else {
+    // Only warn once or just proceed to fallback quietly
+    // console.warn("Unsplash API Key missing. Using generative fallback.");
   }
 
+  // 2. Fallback: Use Pollinations.ai (No API Key required)
+  // This generates an image based on the prompt description.
   try {
-    const response = await fetch(
-      `https://api.unsplash.com/search/photos?query=${encodeURIComponent(query)}&per_page=1`,
-      {
-        headers: {
-          Authorization: `Client-ID ${UNSPLASH_ACCESS_KEY}`,
-        },
-      }
-    );
+    // Add seed to make it consistent for the same query during the session, 
+    // but random enough to be interesting. 
+    // Using a hash of the query would be better for consistency across reloads, 
+    // but random seed is fine for now.
+    const seed = Math.floor(Math.random() * 1000); 
+    // Construct URL directly. Pollinations returns the image binary, so we use the URL as the src.
+    const imageUrl = `https://image.pollinations.ai/prompt/${encodeURIComponent(query)}?width=400&height=300&nologo=true&seed=${seed}&model=flux`;
+    
+    // Cache the URL (browser will cache the image resource itself)
+    imageCache.set(query, imageUrl);
+    return imageUrl;
 
-    if (!response.ok) {
-      console.error(`Unsplash API error: ${response.status} ${response.statusText}`);
-      // Special handling for API Key errors in AI Studio
-      if (response.status === 401 && (window as any).aistudio?.openSelectKey) {
-        alert("Unsplash API Key might be invalid or missing. Please ensure your Unsplash API key is correctly configured.");
-      }
-      return null;
-    }
-
-    const data = await response.json();
-    if (data.results && data.results.length > 0) {
-      const imageUrl = data.results[0].urls.small; // Use 'small' for good balance of size/quality
-      imageCache.set(query, imageUrl); // Cache the image URL
-      return imageUrl;
-    }
-    return null; // No results found
   } catch (error) {
-    console.error("Error fetching image from Unsplash:", error);
+    console.error("Error generating fallback image:", error);
     return null;
   }
 };

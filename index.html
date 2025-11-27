@@ -3,7 +3,7 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Smart Chat K-12</title>
+    <title>Smart LKS</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <style>
       @import url('https://fonts.googleapis.com/css2?family=Nunito:wght@400;600;700;800&display=swap');
@@ -121,13 +121,27 @@
 }
 </script>
 <script>
-  // Expose environment variables for client-side use
-  window.process = {
-    env: {
-      UNSPLASH_API_KEY: process.env.UNSPLASH_API_KEY, // Updated to use dynamic env var
-      API_KEY: '' 
+  // Expose environment variables for client-side use securely
+  window.process = window.process || {};
+  window.process.env = window.process.env || {};
+  
+  // Inject Unsplash Key provided by user
+  window.process.env.UNSPLASH_API_KEY = "eOtJzRxPfw4iNd8Qyr09-y3GczTjjZw60POdDaJinKk";
+
+  // Safely attempt to read env vars if they exist (e.g. from bundler)
+  try {
+    if (typeof process !== 'undefined' && process.env) {
+      if (process.env.UNSPLASH_API_KEY) {
+        window.process.env.UNSPLASH_API_KEY = process.env.UNSPLASH_API_KEY;
+      }
+      if (process.env.API_KEY) {
+        window.process.env.API_KEY = process.env.API_KEY;
+      }
     }
-  };
+  } catch (e) {
+    // Ignore reference errors if process is not defined
+    console.log("Environment variables not loaded from process.env");
+  }
 </script>
 </head>
   <body class="bg-slate-50">

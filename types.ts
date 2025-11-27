@@ -44,6 +44,7 @@ export interface QuizSettings {
   fontSize: number; // New: Font size setting (1=sm, 2=base, 3=lg)
   timerEnabled: boolean;
   questionTypes: ('multiple_choice' | 'essay' | 'true_false')[];
+  themeColor: string; // New: Selected theme color key
 }
 
 export interface QuizState {

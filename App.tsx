@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Play, StopCircle, Clock, Send, Volume2, Image as ImageIcon, CheckCircle, XCircle, ArrowRight, ChevronDown, ChevronUp, List, BookOpen, GraduationCap, Flame, Lightbulb, Loader2, BrainCircuit } from 'lucide-react';
+import { Play, StopCircle, Clock, Send, Volume2, Image as ImageIcon, CheckCircle, XCircle, ArrowRight, ChevronDown, ChevronUp, List, BookOpen, GraduationCap, Flame, Lightbulb, Loader2, BrainCircuit, Palette } from 'lucide-react';
 import { QUESTIONS_DB, getSubjects, getChapters } from './data';
 import { QuizSettings, QuizState, QuestionData, ChatMessage, SchoolLevel } from './types';
 import { playGeminiTTS, fetchImageForPrompt, playNativeTTS, stopAudio, gradeEssayWithGemini, generateLearningSuggestionsWithGemini, generateGeminiAudio, playAudioBuffer } from './geminiService';
@@ -119,34 +119,95 @@ const ConfettiPop: React.FC = () => {
 
 
 // --- Theme Config ---
-const THEME = {
-  SD: {
+// Expanded Color Palettes for User Selection
+const PALETTES: Record<string, any> = {
+  Rose: {
     primary: 'bg-rose-500',
     secondary: 'bg-rose-50',
     border: 'border-rose-200',
     text: 'text-rose-600',
     textDark: 'text-rose-800',
     hover: 'hover:bg-rose-600',
-    accent: 'rose'
+    accent: 'rose',
+    bg: 'bg-rose-500'
   },
-  SMP: {
+  Indigo: {
     primary: 'bg-indigo-600',
     secondary: 'bg-indigo-50',
     border: 'border-indigo-200',
     text: 'text-indigo-600',
     textDark: 'text-indigo-800',
     hover: 'hover:bg-indigo-700',
-    accent: 'indigo'
+    accent: 'indigo',
+    bg: 'bg-indigo-600'
   },
-  SMA: {
+  Slate: {
     primary: 'bg-slate-600',
     secondary: 'bg-slate-100',
     border: 'border-slate-300',
     text: 'text-slate-600',
     textDark: 'text-slate-800',
     hover: 'hover:bg-slate-700',
-    accent: 'slate'
+    accent: 'slate',
+    bg: 'bg-slate-600'
+  },
+  Blue: {
+    primary: 'bg-blue-600',
+    secondary: 'bg-blue-50',
+    border: 'border-blue-200',
+    text: 'text-blue-600',
+    textDark: 'text-blue-800',
+    hover: 'hover:bg-blue-700',
+    accent: 'blue',
+    bg: 'bg-blue-600'
+  },
+  Emerald: {
+    primary: 'bg-emerald-600',
+    secondary: 'bg-emerald-50',
+    border: 'border-emerald-200',
+    text: 'text-emerald-600',
+    textDark: 'text-emerald-800',
+    hover: 'hover:bg-emerald-700',
+    accent: 'emerald',
+    bg: 'bg-emerald-600'
+  },
+  Orange: {
+    primary: 'bg-orange-500',
+    secondary: 'bg-orange-50',
+    border: 'border-orange-200',
+    text: 'text-orange-600',
+    textDark: 'text-orange-800',
+    hover: 'hover:bg-orange-600',
+    accent: 'orange',
+    bg: 'bg-orange-500'
+  },
+  Violet: {
+    primary: 'bg-violet-600',
+    secondary: 'bg-violet-50',
+    border: 'border-violet-200',
+    text: 'text-violet-600',
+    textDark: 'text-violet-800',
+    hover: 'hover:bg-violet-700',
+    accent: 'violet',
+    bg: 'bg-violet-600'
+  },
+  Fuchsia: {
+    primary: 'bg-fuchsia-600',
+    secondary: 'bg-fuchsia-50',
+    border: 'border-fuchsia-200',
+    text: 'text-fuchsia-600',
+    textDark: 'text-fuchsia-800',
+    hover: 'hover:bg-fuchsia-700',
+    accent: 'fuchsia',
+    bg: 'bg-fuchsia-600'
   }
+};
+
+// Map default themes to levels
+const DEFAULT_LEVEL_THEMES: Record<SchoolLevel, string> = {
+  SD: 'Rose',
+  SMP: 'Indigo',
+  SMA: 'Slate'
 };
 
 export default function App() {
@@ -161,6 +222,7 @@ export default function App() {
     fontSize: 3, // New: 1=xs, 2=sm, 3=base, 4=lg, 5=xl
     timerEnabled: false,
     questionTypes: ['multiple_choice', 'essay', 'true_false'],
+    themeColor: 'Rose' // Default theme
   });
 
   const [gameState, setGameState] = useState<QuizState>({
@@ -193,6 +255,8 @@ export default function App() {
   const [learningSuggestions, setLearningSuggestions] = useState<string | null>(null); // New: State for learning suggestions
   // Removed isGeneratingLearningSuggestions as we use 'analyzing' status now
 
+  // New: Ref to track when the current question started
+  const questionStartTimeRef = useRef<number>(0);
 
   // Audio refs for correct/wrong answers
   const correctAudio = useRef<HTMLAudioElement | null>(null);
@@ -206,6 +270,13 @@ export default function App() {
     if (correctAudio.current) correctAudio.current.muted = true;
     if (wrongAudio.current) wrongAudio.current.muted = true;
   }, []);
+
+  // Effect to track question start time
+  useEffect(() => {
+    if (gameState.status === 'quiz' && gameState.currentQuestion) {
+      questionStartTimeRef.current = Date.now();
+    }
+  }, [gameState.currentQuestion, gameState.status]);
 
   // --- Helpers ---
   const scrollToBottom = () => {
@@ -238,9 +309,16 @@ export default function App() {
     if (settings.level === 'SMP' && (settings.grade < 7 || settings.grade > 9)) isOutOfBounds = true;
     if (settings.level === 'SMA' && (settings.grade < 10 || settings.grade > 12)) isOutOfBounds = true;
 
-    if (isOutOfBounds) {
-        setSettings(s => ({ ...s, grade: defaultGrade, subjects: [], chapters: [] }));
-    }
+    // Default theme change when level changes (User can override later)
+    const newTheme = DEFAULT_LEVEL_THEMES[settings.level];
+
+    setSettings(s => ({ 
+        ...s, 
+        grade: isOutOfBounds ? defaultGrade : s.grade, 
+        subjects: isOutOfBounds ? [] : s.subjects, 
+        chapters: isOutOfBounds ? [] : s.chapters,
+        themeColor: newTheme
+    }));
   }, [settings.level]);
 
   // Reset Subjects/Chapters when Grade Changes
@@ -389,6 +467,11 @@ export default function App() {
   const handleAnswerSubmit = async (answer: string | null, timeUp = false) => {
     // 1. Pre-check and initial state
     if (isProcessing || gameState.animationFeedback !== null || gameState.isWaitingForNext) return;
+    
+    // Capture time taken immediately
+    const timeTaken = Math.max(1, Math.round((Date.now() - questionStartTimeRef.current) / 1000));
+    const timeString = `\n⏱️ Waktu menyelesaikan soal ini adalah ${timeTaken} detik.`;
+
     setIsProcessing(true);
     stopAudio(); 
 
@@ -482,6 +565,9 @@ export default function App() {
             // If wrong, and there _was_ a streak, report the *old* streak before it reset
             finalFeedbackText = `Ups, streakmu terhenti di ${gameState.currentStreak}. Jangan menyerah! ${aiFeedback}`;
         }
+
+        // Append the time string to the final feedback
+        finalFeedbackText += timeString;
 
         const finalTeacherMsg: ChatMessage = {
             id: Date.now().toString() + '_fb',
@@ -744,7 +830,7 @@ export default function App() {
   };
 
   const renderSetup = () => {
-    const theme = THEME[settings.level];
+    const theme = PALETTES[settings.themeColor] || PALETTES['Rose'];
     const availableSubjects = getSubjects(settings.level, settings.grade);
     // const totalAvailable = calculateTotalQuestions(); // Not used directly in render
 
@@ -754,7 +840,7 @@ export default function App() {
     return (
       <div className="max-w-lg mx-auto p-6 bg-white min-h-screen flex flex-col gap-6 font-sans animate-fade-in">
         <div className="text-center mb-2">
-            <h1 className={`text-3xl font-extrabold ${theme.text} tracking-tight`}>Smart Chat K-12</h1>
+            <h1 className={`text-3xl font-extrabold ${theme.text} tracking-tight`}>Smart LKS</h1>
             <p className="text-gray-500 text-sm">Asisten Belajar Interaktif</p>
         </div>
         
@@ -762,15 +848,21 @@ export default function App() {
         <div>
             <label className={`text-sm font-bold ${theme.textDark} block mb-2`}>Jenjang Sekolah</label>
             <div className="grid grid-cols-3 gap-3">
-                {(['SD', 'SMP', 'SMA'] as SchoolLevel[]).map(lvl => (
-                    <button
-                        key={lvl}
-                        onClick={() => setSettings(s => ({ ...s, level: lvl }))}
-                        className={`py-3 rounded-xl font-bold text-lg transition-all border-2 ${settings.level === lvl ? `${THEME[lvl].primary} text-white ${THEME[lvl].border} shadow-lg scale-105` : `bg-white text-gray-400 border-gray-100 hover:border-gray-300`}`}
-                    >
-                        {lvl}
-                    </button>
-                ))}
+                {(['SD', 'SMP', 'SMA'] as SchoolLevel[]).map(lvl => {
+                    // Pre-calculate theme for level buttons to match the logic (SD=Rose, etc) even if unselected
+                    const levelDefaultColor = DEFAULT_LEVEL_THEMES[lvl];
+                    const levelTheme = PALETTES[levelDefaultColor];
+                    
+                    return (
+                        <button
+                            key={lvl}
+                            onClick={() => setSettings(s => ({ ...s, level: lvl }))}
+                            className={`py-3 rounded-xl font-bold text-lg transition-all border-2 ${settings.level === lvl ? `${levelTheme.primary} text-white ${levelTheme.border} shadow-lg scale-105` : `bg-white text-gray-400 border-gray-100 hover:border-gray-300`}`}
+                        >
+                            {lvl}
+                        </button>
+                    )
+                })}
             </div>
         </div>
 
@@ -847,8 +939,10 @@ export default function App() {
         )}
 
         <div className="bg-gray-50 p-4 rounded-2xl border border-gray-100 mt-auto">
-             <label className="block text-xs font-bold text-gray-500 mb-2 uppercase tracking-wide">Pengaturan Tambahan</label>
-             <div className="flex items-center justify-between">
+             <label className="block text-xs font-bold text-gray-500 mb-4 uppercase tracking-wide">Pengaturan Tambahan</label>
+             
+             {/* Timer Toggle */}
+             <div className="flex items-center justify-between mb-4">
                 <div className="flex items-center gap-2 text-gray-600">
                     <Clock size={16} /> 
                     <span className="text-sm font-medium">Timer</span>
@@ -860,7 +954,9 @@ export default function App() {
                     <div className={`w-4 h-4 bg-white rounded-full absolute top-1 transition-all ${settings.timerEnabled ? 'left-7' : 'left-1'}`} />
                 </button>
              </div>
-             <div className="mt-4">
+
+             {/* Question Count Slider */}
+             <div className="mb-4">
                  <div className="flex justify-between text-xs text-gray-500 font-bold mb-1">
                     <span>Jumlah Soal</span>
                     <span>{settings.questionCount}</span>
@@ -872,8 +968,9 @@ export default function App() {
                    className={`w-full h-2 bg-gray-200 rounded-lg appearance-none cursor-pointer accent-${theme.accent}-500`}
                  />
              </div>
-             {/* New: Font Size Adjustment */}
-             <div className="mt-4">
+
+             {/* Font Size Adjustment */}
+             <div className="mb-4">
                  <div className="flex justify-between text-xs text-gray-500 font-bold mb-1">
                     <span>Ukuran Font</span>
                     <span>
@@ -890,6 +987,30 @@ export default function App() {
                    className={`w-full h-2 bg-gray-200 rounded-lg appearance-none cursor-pointer accent-${theme.accent}-500`}
                  />
              </div>
+
+             {/* Theme Color Picker */}
+             <div>
+                 <div className="flex items-center gap-2 text-gray-600 mb-3">
+                    <Palette size={16} /> 
+                    <span className="text-sm font-medium">Tema Warna</span>
+                 </div>
+                 <div className="flex flex-wrap gap-2 justify-between">
+                    {Object.keys(PALETTES).map((colorKey) => {
+                        const palette = PALETTES[colorKey];
+                        const isSelected = settings.themeColor === colorKey;
+                        return (
+                            <button
+                                key={colorKey}
+                                onClick={() => setSettings(s => ({...s, themeColor: colorKey}))}
+                                className={`w-8 h-8 rounded-full ${palette.bg} transition-all duration-200 flex items-center justify-center ${isSelected ? 'ring-2 ring-offset-2 ring-gray-400 scale-110 shadow-sm' : 'hover:scale-105'}`}
+                                title={colorKey}
+                            >
+                                {isSelected && <CheckCircle size={14} className="text-white" />}
+                            </button>
+                        );
+                    })}
+                 </div>
+             </div>
         </div>
 
         <button 
@@ -904,7 +1025,7 @@ export default function App() {
   };
 
   const renderQuiz = () => {
-    const theme = THEME[settings.level];
+    const theme = PALETTES[settings.themeColor] || PALETTES['Rose'];
     // Dynamic font size class based on settings
     const fontSizeClass = 
       settings.fontSize === 1 ? 'text-xs' :
@@ -1131,7 +1252,7 @@ export default function App() {
 
   // New Render function for the Analyzing state
   const renderAnalyzing = () => {
-    const theme = THEME[settings.level];
+    const theme = PALETTES[settings.themeColor] || PALETTES['Rose'];
     
     return (
       <div className={`min-h-screen bg-slate-50 flex flex-col items-center justify-center p-6 text-center animate-fade-in`}>
@@ -1158,7 +1279,7 @@ export default function App() {
   };
 
   const renderSummary = () => {
-    const theme = THEME[settings.level];
+    const theme = PALETTES[settings.themeColor] || PALETTES['Rose'];
     const percentage = gameState.totalAnswered > 0 
         ? Math.round((gameState.score / gameState.totalAnswered) * 100) 
         : 0;
