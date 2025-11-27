@@ -1,5 +1,5 @@
 {
-  "name": "Smart Chat 3rd Grade",
-  "description": "An interactive chat-based learning assistant for 3rd grade students featuring adaptive learning loops and text-to-speech.",
+  "name": "Smart Chat K-12",
+  "description": "An interactive learning assistant for Grade 1-12 (SD, SMP, SMA) students.",
   "requestFramePermissions": []
 }
