@@ -5,12 +5,12 @@ import { RawQuestion } from './data_types';
 
 // SD Subject Configuration (1-6)
 export const SD_SUBJECTS: Record<number, string[]> = {
-  1: ["Pendidikan Agama dan Budi Pekerti", "Pendidikan Pancasila", "Bahasa Indonesia", "Matematika", "PJOK", "Seni Rupa"],
-  2: ["Pendidikan Agama dan Budi Pekerti", "Pendidikan Pancasila", "Bahasa Indonesia", "Matematika", "PJOK", "Seni Rupa", "Bahasa Inggris"],
-  3: ["Pendidikan Pancasila", "Bahasa Indonesia", "Bahasa Inggris", "Matematika", "IPAS", "Seni Rupa", "PJOK"],
-  4: ["Bahasa Indonesia", "Matematika", "IPAS", "Bahasa Inggris", "PPKn", "Pendidikan Agama dan Budi Pekerti", "PJOK", "Seni"],
-  5: ["Matematika", "IPAS", "Bahasa Indonesia", "PPKn", "Bahasa Inggris", "Pendidikan Agama dan Budi Pekerti", "PJOK"],
-  6: ["PPKn", "Pendidikan Agama dan Budi Pekerti", "IPAS", "Bahasa Indonesia", "Matematika", "PJOK", "Bahasa Inggris", "Seni Rupa"]
+  1: ["PAI", "Pendidikan Pancasila", "Bahasa Indonesia", "Matematika", "PJOK", "Seni Rupa"],
+  2: ["PAI", "Pendidikan Pancasila", "Bahasa Indonesia", "Matematika", "PJOK", "Seni Rupa", "Bahasa Inggris"],
+  3: ["Pendidikan Pancasila", "Bahasa Indonesia", "Bahasa Inggris", "Matematika", "IPAS", "Seni Rupa", "PJOK", "PAI", "TIK"], // Added PAI and TIK
+  4: ["Bahasa Indonesia", "Matematika", "IPAS", "Bahasa Inggris", "PPKn", "PAI", "PJOK", "Seni"],
+  5: ["Matematika", "IPAS", "Bahasa Indonesia", "PPKn", "Bahasa Inggris", "PAI", "PJOK"],
+  6: ["PPKn", "PAI", "IPAS", "Bahasa Indonesia", "Matematika", "PJOK", "Bahasa Inggris", "Seni Rupa"]
 };
 
 const processOptions = (rawOpts: any): Option[] => {
@@ -68,9 +68,10 @@ export const getSDQuestions = (): QuestionData[] => {
             else if (subjectLower.includes("inggris")) keywords.push("bahasa inggris");
             else if (subjectLower.includes("ipas") || subjectLower.includes("alam")) keywords.push("ipas", "ipa");
             else if (subjectLower.includes("pancasila") || subjectLower.includes("ppkn") || subjectLower.includes("pkn")) keywords.push("pancasila", "ppkn", "pkn");
-            else if (subjectLower.includes("seni")) keywords.push("seni");
+            else if (subjectLower.includes("seni")) keywords.push("seni rupa", "seni");
             else if (subjectLower.includes("pjok") || subjectLower.includes("olahraga")) keywords.push("pjok");
-            else if (subjectLower.includes("agama")) keywords.push("agama");
+            else if (subjectLower === "pai" || subjectLower.includes("agama")) keywords.push("pai", "agama"); // Added "pai" keyword
+            else if (subjectLower.includes("tik")) keywords.push("tik", "informatika"); // Added TIK
 
             const relevantBlocks = RAW_DATA.filter(block => {
                 return block.Grade === grade && keywords.includes(block.Subject.toLowerCase());

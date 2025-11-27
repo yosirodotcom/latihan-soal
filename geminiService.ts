@@ -1,4 +1,5 @@
-import { GoogleGenAI, Modality, Type } from "@google/genai";
+import { GoogleGenAI, Modality, Type, GenerateContentResponse } from "@google/genai";
+import { SchoolLevel } from "./types";
 
 // Singleton AudioContext to prevent browser limits
 let audioCtx: AudioContext | null = null;
@@ -67,68 +68,67 @@ async function decodeAudioData(
 
 // --- Main Services ---
 
-// Returns a Promise that resolves when audio FINISHES playing or is cancelled
-// Returns true if handled (played or cancelled), false if failed (needs fallback)
-export const playGeminiTTS = async (text: string): Promise<boolean> => {
-  stopAudio(); // Stop previous audio first
-  const myPlaybackId = currentPlaybackId;
-
-  if (!process.env.API_KEY) {
-    console.warn("Gemini API Key is missing.");
-    return false;
-  }
-
-  try {
-    const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
-    const modelId = "gemini-2.5-flash-preview-tts";
-
-    const response = await ai.models.generateContent({
-      model: modelId,
-      contents: [{
-        parts: [{ text: text }],
-      }],
-      config: {
-        responseModalities: [Modality.AUDIO],
-        speechConfig: {
-          voiceConfig: {
-            prebuiltVoiceConfig: { voiceName: 'Kore' }, // 'Kore' is a good female voice
-          },
-        },
-      },
-    });
-
-    // Check if a new audio request started while we were fetching
-    if (myPlaybackId !== currentPlaybackId) {
-        return true; // Return true to indicate handled (cancelled), avoiding fallback
+// NEW: Generate TTS Audio Buffer without playing it (for pre-loading)
+export const generateGeminiAudio = async (text: string): Promise<AudioBuffer | null> => {
+    if (!process.env.API_KEY) {
+        console.warn("Gemini API Key is missing.");
+        return null;
     }
 
-    const base64Audio = response.candidates?.[0]?.content?.parts?.[0]?.inlineData?.data;
+    try {
+        const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+        const modelId = "gemini-2.5-flash-preview-tts";
 
-    if (!base64Audio) {
-      console.warn("No audio data returned from Gemini.");
-      return false;
+        const response = await ai.models.generateContent({
+            model: modelId,
+            contents: [{
+                parts: [{ text: text }],
+            }],
+            config: {
+                responseModalities: [Modality.AUDIO],
+                speechConfig: {
+                    voiceConfig: {
+                        prebuiltVoiceConfig: { voiceName: 'Kore' },
+                    },
+                },
+            },
+        });
+
+        const base64Audio = response.candidates?.[0]?.content?.parts?.[0]?.inlineData?.data;
+
+        if (!base64Audio) {
+            console.warn("No audio data returned from Gemini.");
+            return null;
+        }
+
+        const ctx = getAudioContext();
+        // Ensure context is running (needed for some browsers after user gesture)
+        if (ctx.state === 'suspended') {
+             await ctx.resume();
+        }
+
+        const pcmBytes = decodeBase64(base64Audio);
+        
+        return await decodeAudioData(
+            pcmBytes,
+            ctx,
+            24000, 
+            1
+        );
+    } catch (error) {
+        console.error("Gemini TTS Generation Error:", error);
+        return null;
     }
+}
 
-    // Decode and Play
+// NEW: Play a pre-loaded AudioBuffer
+export const playAudioBuffer = async (audioBuffer: AudioBuffer): Promise<boolean> => {
+    stopAudio();
+    const myPlaybackId = currentPlaybackId;
     const ctx = getAudioContext();
     
-    // Ensure context is running (needed for some browsers after user gesture)
     if (ctx.state === 'suspended') {
-      await ctx.resume();
-    }
-
-    const pcmBytes = decodeBase64(base64Audio);
-    
-    const audioBuffer = await decodeAudioData(
-      pcmBytes,
-      ctx,
-      24000, // Gemini TTS typically uses 24kHz
-      1      // Mono
-    );
-
-    // Check cancellation again after decoding
-    if (myPlaybackId !== currentPlaybackId) {
-        return true;
+        await ctx.resume();
     }
 
     return new Promise((resolve) => {
@@ -137,7 +137,6 @@ export const playGeminiTTS = async (text: string): Promise<boolean> => {
       source.connect(ctx.destination);
       
       source.onended = () => {
-        // Only nullify currentSource if it's still the same one
         if (currentSource === source) {
             currentSource = null;
         }
@@ -146,154 +145,250 @@ export const playGeminiTTS = async (text: string): Promise<boolean> => {
 
       currentSource = source;
       source.start();
+      
+      // Check immediately if it was cancelled during setup (rare edge case)
+      if (myPlaybackId !== currentPlaybackId) {
+          source.stop();
+          resolve(true);
+      }
     });
+}
 
-  } catch (error) {
-    // If cancelled, ignore error
-    if (myPlaybackId !== currentPlaybackId) return true;
-    console.error("Gemini TTS Error:", error);
-    return false;
-  }
+
+// Returns a Promise that resolves when audio FINISHES playing or is cancelled
+export const playGeminiTTS = async (text: string): Promise<boolean> => {
+  stopAudio(); 
+  const myPlaybackId = currentPlaybackId;
+
+  // Re-use the generation logic
+  const audioBuffer = await generateGeminiAudio(text);
+
+  // Check cancellation
+  if (myPlaybackId !== currentPlaybackId) return true;
+
+  if (!audioBuffer) return false;
+
+  return playAudioBuffer(audioBuffer);
+};
+
+// New: Play native browser TTS as a fallback
+export const playNativeTTS = (text: string): Promise<boolean> => {
+  stopAudio(); // Stop any previous audio, including Gemini TTS
+  return new Promise((resolve) => {
+    if (!('speechSynthesis' in window)) {
+      console.warn("Native TTS is not supported in this browser.");
+      resolve(false);
+      return;
+    }
+
+    const utterance = new SpeechSynthesisUtterance(text);
+    utterance.lang = 'id-ID'; // Set language to Indonesian
+    utterance.volume = 1; // 0 to 1
+    utterance.rate = 1; // 0.1 to 10
+    utterance.pitch = 1; // 0 to 2
+
+    utterance.onend = () => {
+      resolve(true);
+    };
+    utterance.onerror = (event) => {
+      console.error('Native TTS error:', event);
+      resolve(false);
+    };
+
+    window.speechSynthesis.speak(utterance);
+  });
 };
 
 // Cache to prevent re-fetching the same image
 const imageCache = new Map<string, string>();
 
-export const generateImage = async (prompt: string): Promise<string | null> => {
-  if (!process.env.API_KEY) {
-    console.warn("Gemini API Key is missing.");
-    return null;
+// New: Exported function to fetch image for a prompt
+export const fetchImageForPrompt = async (query: string): Promise<string | null> => {
+  // Check cache first
+  if (imageCache.has(query)) {
+    return imageCache.get(query)!;
   }
 
-  if (imageCache.has(prompt)) {
-    return imageCache.get(prompt) || null;
+  const UNSPLASH_ACCESS_KEY = process.env.UNSPLASH_API_KEY;
+
+  if (!UNSPLASH_ACCESS_KEY) {
+    console.warn("Unsplash API Key is missing from environment. Cannot fetch image from Unsplash.");
+    return null;
   }
 
   try {
-    const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
-    const response = await ai.models.generateContent({
-      model: 'gemini-2.5-flash-image',
-      contents: {
-        parts: [{ text: prompt }]
-      },
-    });
-
-    const parts = response.candidates?.[0]?.content?.parts;
-    if (parts) {
-      for (const part of parts) {
-        if (part.inlineData) {
-          const base64Image = part.inlineData.data;
-          const mimeType = part.inlineData.mimeType || 'image/png';
-          const imageSrc = `data:${mimeType};base64,${base64Image}`;
-          imageCache.set(prompt, imageSrc);
-          return imageSrc;
-        }
+    const response = await fetch(
+      `https://api.unsplash.com/search/photos?query=${encodeURIComponent(query)}&per_page=1`,
+      {
+        headers: {
+          Authorization: `Client-ID ${UNSPLASH_ACCESS_KEY}`,
+        },
       }
+    );
+
+    if (!response.ok) {
+      console.error(`Unsplash API error: ${response.status} ${response.statusText}`);
+      // Special handling for API Key errors in AI Studio
+      if (response.status === 401 && (window as any).aistudio?.openSelectKey) {
+        alert("Unsplash API Key might be invalid or missing. Please ensure your Unsplash API key is correctly configured.");
+      }
+      return null;
     }
-    return null;
+
+    const data = await response.json();
+    if (data.results && data.results.length > 0) {
+      const imageUrl = data.results[0].urls.small; // Use 'small' for good balance of size/quality
+      imageCache.set(query, imageUrl); // Cache the image URL
+      return imageUrl;
+    }
+    return null; // No results found
   } catch (error) {
-    console.error("Gemini Image Gen Error:", error);
+    console.error("Error fetching image from Unsplash:", error);
     return null;
   }
 };
 
-export const playNativeTTS = (text: string): Promise<void> => {
-  stopAudio(); // Ensure stop is called
-  const myPlaybackId = currentPlaybackId;
-
-  return new Promise((resolve) => {
-    if (myPlaybackId !== currentPlaybackId) {
-        resolve();
-        return;
-    }
-
-    if (!('speechSynthesis' in window)) {
-      resolve();
-      return;
-    }
-
-    const utterance = new SpeechSynthesisUtterance(text);
-    const voices = window.speechSynthesis.getVoices();
-    
-    // Prioritize Indonesian voice, then generic Female/English
-    const indoVoice = voices.find(v => v.lang.includes('id') || v.lang.includes('ID'));
-    const femaleVoice = voices.find(v => v.name.includes('Female') || v.name.includes('Google US English'));
-    
-    if (indoVoice) {
-      utterance.voice = indoVoice;
-    } else if (femaleVoice) {
-      utterance.voice = femaleVoice;
-    }
-    
-    utterance.rate = 1; // Normal speed
-    utterance.pitch = 1;
-
-    utterance.onend = () => resolve();
-    utterance.onerror = () => resolve(); // Resolve on error too so app doesn't hang
-
-    if (myPlaybackId === currentPlaybackId) {
-        window.speechSynthesis.speak(utterance);
-    } else {
-        resolve();
-    }
-  });
-};
-
+// New: Gemini function to grade essays
 export const gradeEssayWithGemini = async (userAnswer: string, correctAnswer: string): Promise<{ score: number; feedback: string }> => {
   if (!process.env.API_KEY) {
-      return { score: 0, feedback: "API Key missing, cannot grade." };
+    console.warn("Gemini API Key is missing.");
+    return { score: 0, feedback: "API Key tidak tersedia untuk penilaian esai." };
   }
 
   try {
     const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
-    const response = await ai.models.generateContent({
-      model: "gemini-2.5-flash",
-      contents: [{
-        parts: [{ text: `
-          Peran: Guru Sekolah Dasar (SD) yang bijaksana.
-          Tugas: Menilai jawaban siswa berdasarkan jawaban kunci.
-          
-          Pertanyaan Konteks: Pelajaran Sekolah Dasar.
-          Jawaban Kunci: "${correctAnswer}"
-          Jawaban Siswa: "${userAnswer}"
-          
-          Instruksi Penilaian:
-          1. Berikan skor 0-100 berdasarkan kemiripan makna, bukan persis kata-per-kata.
-          2. Typo kecil dimaafkan.
-          3. Jika jawaban siswa kosong atau sangat ngawur, beri nilai 0.
-          4. Berikan umpan balik singkat (maksimal 15 kata) dalam Bahasa Indonesia yang menyemangati.
-          
-          Output JSON:
-          {
-            "score": number,
-            "feedback": "string"
-          }
-        ` }]
-      }],
+    const model = 'gemini-3-pro-preview'; // Use a pro model for complex reasoning
+
+    const prompt = `Nilai jawaban esai siswa berikut ini.
+    Jawaban siswa: "${userAnswer}"
+    Jawaban yang benar: "${correctAnswer}"
+
+    Abaikan kesalahan ejaan atau tata bahasa kecil, fokus pada esensi dan keakuratan jawaban siswa.
+    Berikan skor antara 0-100 (100 adalah sempurna, 0 adalah tidak relevan sama sekali) dan berikan umpan balik konstruktif yang singkat dalam Bahasa Indonesia.
+    Fokus pada:
+    1. Relevansi jawaban siswa dengan pertanyaan.
+    2. Akurasi informasi yang diberikan.
+    3. Kelengkapan jawaban dibandingkan dengan jawaban yang benar.
+    4. Bahasa dan struktur (namun tetap abaikan kesalahan kecil seperti yang diinstruksikan).
+
+    Format output sebagai JSON dengan properti 'score' (number) dan 'feedback' (string).`;
+
+    const response: GenerateContentResponse = await ai.models.generateContent({
+      model: model,
+      contents: prompt,
       config: {
         responseMimeType: "application/json",
         responseSchema: {
-            type: Type.OBJECT,
-            properties: {
-                score: { type: Type.NUMBER },
-                feedback: { type: Type.STRING }
-            },
-            required: ["score", "feedback"]
-        }
-      }
+          type: Type.OBJECT,
+          properties: {
+            score: { type: Type.NUMBER, description: "Skor penilaian 0-100" },
+            feedback: { type: Type.STRING, description: "Umpan balik konstruktif" },
+          },
+          required: ["score", "feedback"],
+        },
+        temperature: 0.2, // Lower temperature for more objective grading
+      },
     });
 
-    const result = JSON.parse(response.text || "{}");
-    return { score: result.score || 0, feedback: result.feedback || "" };
+    const jsonText = response.text?.trim();
+    if (!jsonText) {
+      throw new Error("No JSON response from Gemini for essay grading.");
+    }
+
+    // Try to parse the JSON, handle potential malformed output
+    try {
+      const parsed = JSON.parse(jsonText);
+      if (typeof parsed.score === 'number' && typeof parsed.feedback === 'string') {
+        return parsed;
+      } else {
+        throw new Error("Malformed JSON structure for essay grading.");
+      }
+    } catch (parseError) {
+      console.error("Error parsing Gemini essay grading JSON:", parseError, "Raw text:", jsonText);
+      // Fallback to simple logic if JSON parsing fails
+      // Fix: Use 'correctAnswer' instead of 'correctAns'
+      const isCorrectFallback = userAnswer.toLowerCase().includes(correctAnswer.toLowerCase());
+      return {
+        score: isCorrectFallback ? 80 : 20,
+        feedback: `(Fallback) ${isCorrectFallback ? "Jawaban Anda relevan." : "Jawaban Anda kurang relevan."} Coba periksa kembali.`
+      };
+    }
+
   } catch (error) {
-    console.error("Gemini Grading Error:", error);
-    // Fallback basic grading
-    const normalizedUser = userAnswer.toLowerCase();
-    const normalizedKey = correctAnswer.toLowerCase();
-    const isMatch = normalizedUser.includes(normalizedKey) || normalizedKey.includes(normalizedUser);
-    return { 
-        score: isMatch ? 100 : 0, 
-        feedback: isMatch ? "Jawaban mirip secara manual." : "Gagal menilai dengan AI." 
-    };
+    console.error("Error calling Gemini for essay grading:", error);
+    if (
+      (error instanceof Error &&
+        (error.message.includes("RESOURCE_EXHAUSTED") ||
+          error.message.includes("Requested entity was not found."))) ||
+      (typeof (error as any).code === 'number' && (error as any).code === 500) ||
+      (typeof (error as any).code === 'number' && (error as any).code === 6 && (error as any).message.includes("Rpc failed"))
+    ) {
+      alert("Terjadi kesalahan API Gemini. Mohon pastikan API Key Gemini Anda valid dan memiliki billing aktif. Klik OK untuk memilih ulang kunci API.");
+      (window as any).aistudio?.openSelectKey();
+    }
+    return { score: 0, feedback: `Terjadi kesalahan saat menilai esai: ${(error as Error).message}` };
+  }
+};
+
+// New: Gemini function to generate learning suggestions
+export const generateLearningSuggestionsWithGemini = async (
+  aggregatedMistakes: Array<{ subject: string; chapter: number; count: number }>,
+  level: SchoolLevel
+): Promise<string> => {
+  if (!process.env.API_KEY) {
+    console.warn("Gemini API Key is missing.");
+    return "API Key tidak tersedia untuk saran belajar.";
+  }
+
+  try {
+    const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+    const model = 'gemini-3-pro-preview'; // Use a pro model for better reasoning
+
+    let mistakeSummary = "Siswa tidak memiliki kesalahan spesifik yang tercatat.";
+    if (aggregatedMistakes.length > 0) {
+      mistakeSummary = "Berdasarkan kesalahan yang tercatat, siswa kesulitan pada topik berikut:\n";
+      aggregatedMistakes.forEach(mistake => {
+        mistakeSummary += `- Mata Pelajaran: ${mistake.subject}, Bab: ${mistake.chapter} (Total kesalahan: ${mistake.count} soal)\n`;
+      });
+    }
+
+    const prompt = `Kamu adalah seorang guru dan 'Smart Coach' yang memberikan saran belajar personal.
+    
+    Berikut adalah ringkasan area di mana siswa mengalami kesulitan selama kuis:
+    ${mistakeSummary}
+
+    Jenjang Sekolah: ${level}
+
+    Berikan saran belajar yang spesifik dan actionable dalam Bahasa Indonesia untuk membantu siswa meningkatkan pemahaman pada area yang disebutkan. Jika tidak ada kesalahan spesifik, berikan saran umum untuk menjaga dan meningkatkan performa.
+    Saran harus mencakup:
+    1. Sumber belajar yang bisa digunakan (misal: buku pelajaran, video edukasi, latihan soal).
+    2. Metode belajar yang efektif (misal: membuat rangkuman, diskusi kelompok, mengulang konsep).
+    3. Pentingnya konsistensi.
+    
+    Tuliskan dalam bentuk paragraf yang padat dan informatif.`;
+
+    const response: GenerateContentResponse = await ai.models.generateContent({
+      model: model,
+      contents: prompt,
+      config: {
+        temperature: 0.8, // Slightly higher temperature for more diverse suggestions
+      },
+    });
+
+    return response.text ?? "Tidak dapat memuat saran belajar tambahan.";
+
+  } catch (error) {
+    console.error("Error calling Gemini for learning suggestions:", error);
+    if (
+      (error instanceof Error &&
+        (error.message.includes("RESOURCE_EXHAUSTED") ||
+          error.message.includes("Requested entity was not found."))) ||
+      (typeof (error as any).code === 'number' && (error as any).code === 500) ||
+      (typeof (error as any).code === 'number' && (error as any).code === 6 && (error as any).message.includes("Rpc failed"))
+    ) {
+      alert("Terjadi kesalahan API Gemini. Mohon pastikan API Key Gemini Anda valid dan memiliki billing aktif. Klik OK untuk memilih ulang kunci API.");
+      (window as any).aistudio?.openSelectKey();
+    }
+    return `Terjadi kesalahan saat memuat saran belajar: ${(error as Error).message}`;
   }
 };

@@ -1,4 +1,5 @@
 
+
 export type SchoolLevel = 'SD' | 'SMP' | 'SMA';
 
 export interface ImagePrompt {
@@ -40,13 +41,13 @@ export interface QuizSettings {
   semester: number;
   chapters: number[];
   questionCount: number;
-  fontSize: number;
+  fontSize: number; // New: Font size setting (1=sm, 2=base, 3=lg)
   timerEnabled: boolean;
   questionTypes: ('multiple_choice' | 'essay' | 'true_false')[];
 }
 
 export interface QuizState {
-  status: 'setup' | 'quiz' | 'summary';
+  status: 'setup' | 'quiz' | 'analyzing' | 'summary'; // Updated: Added 'analyzing'
   score: number;
   totalAnswered: number;
   history: ChatMessage[];
@@ -54,10 +55,19 @@ export interface QuizState {
   currentQuestion: QuestionData | null;
   loopState: {
     active: boolean;
-    streak: number;
+    streak: number; // This streak is for the remediation loop
     parentId: string | null;
   };
+  currentStreak: number; // New: General gamification streak
   timeLeft: number;
   isWaitingForNext: boolean;
   lastAnswerCorrect: boolean | null;
+  showConfetti: boolean; // New: Controls confetti animation
+  // Fix: Add animation-related properties to QuizState
+  animatingOptionValue: string | null; // Stores the value of the option being animated
+  animationFeedback: 'correct' | 'wrong' | null; // Stores the feedback type for animation
+  correctAnswerOptionValue: string | null; // Stores the correct answer text for highlighting
+  elapsedTime: number; // New: Total time spent on the quiz
+  questionAttempts: { questionId: string; isCorrect: boolean; subject: string; chapter: number; }[]; // New: Track individual question outcomes
+  confettiKey: number; // New: Key to force remounting ConfettiPop
 }

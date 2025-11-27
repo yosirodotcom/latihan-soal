@@ -1,12 +1,11 @@
-
 import React, { useState, useEffect, useRef } from 'react';
-import { Play, StopCircle, Clock, Send, Volume2, Image as ImageIcon, CheckCircle, XCircle, ArrowRight, ChevronDown, ChevronUp, List, BookOpen, GraduationCap } from 'lucide-react';
+import { Play, StopCircle, Clock, Send, Volume2, Image as ImageIcon, CheckCircle, XCircle, ArrowRight, ChevronDown, ChevronUp, List, BookOpen, GraduationCap, Flame, Lightbulb, Loader2, BrainCircuit } from 'lucide-react';
 import { QUESTIONS_DB, getSubjects, getChapters } from './data';
 import { QuizSettings, QuizState, QuestionData, ChatMessage, SchoolLevel } from './types';
-import { playGeminiTTS, generateImage, playNativeTTS, stopAudio, gradeEssayWithGemini } from './geminiService';
+import { playGeminiTTS, fetchImageForPrompt, playNativeTTS, stopAudio, gradeEssayWithGemini, generateLearningSuggestionsWithGemini, generateGeminiAudio, playAudioBuffer } from './geminiService';
 
-// Sub-component for handling Async Image Generation
-const GeneratedImage: React.FC<{ prompt: string }> = ({ prompt }) => {
+// Sub-component for handling Async Image Fetching/Generation
+const PromptImage: React.FC<{ prompt: string }> = ({ prompt }) => {
   const [src, setSrc] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
 
@@ -14,7 +13,7 @@ const GeneratedImage: React.FC<{ prompt: string }> = ({ prompt }) => {
     let active = true;
     const fetchImage = async () => {
       try {
-        const data = await generateImage(prompt);
+        const data = await fetchImageForPrompt(prompt);
         if (active) setSrc(data);
       } catch (e) {
         console.error(e);
@@ -30,7 +29,7 @@ const GeneratedImage: React.FC<{ prompt: string }> = ({ prompt }) => {
     return (
       <div className="w-full h-48 bg-gray-100 rounded-lg animate-pulse flex flex-col items-center justify-center gap-2 border border-gray-200">
         <ImageIcon className="text-gray-300" size={32} />
-        <span className="text-xs text-gray-400">Sedang menggambar...</span>
+        <span className="text-xs text-gray-400">Sedang memuat gambar...</span>
       </div>
     );
   }
@@ -74,18 +73,50 @@ const ToggleableImage: React.FC<{ prompt: string, label?: string }> = ({ prompt,
   return (
     <div className="mt-2 w-full">
       <div className="flex justify-between items-center mb-2">
-        <span className="text-xs text-gray-400 italic truncate flex-1 mr-2">{prompt}</span>
+        {/* Removed: <span className="text-xs text-gray-400 italic truncate flex-1 mr-2">{prompt}</span> */}
         <button 
           onClick={(e) => { e.stopPropagation(); setIsOpen(false); }}
-          className="text-gray-400 hover:text-gray-600"
+          className="text-gray-400 hover:text-gray-600 ml-auto" // Added ml-auto to push button to right
         >
           <ChevronUp size={16} />
         </button>
       </div>
-      <GeneratedImage prompt={prompt} />
+      <PromptImage prompt={prompt} />
     </div>
   );
 }
+
+// Single large Checkmark pop-up component for correct answers
+// Updated to be fixed centered on screen
+const ConfettiPop: React.FC = () => {
+  const [isVisible, setIsVisible] = useState(true);
+
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      setIsVisible(false); // Remove after animation
+    }, 2000); // Matches CSS animation duration
+
+    return () => clearTimeout(timer);
+  }, []);
+
+  if (!isVisible) return null;
+
+  return (
+    <div
+      className="confetti-pop"
+      style={{
+        position: 'fixed',
+        left: '50%',
+        top: '50%',
+        transform: 'translate(-50%, -50%)',
+        zIndex: 50
+      }}
+    >
+      <CheckCircle size={80} />
+    </div>
+  );
+};
+
 
 // --- Theme Config ---
 const THEME = {
@@ -127,7 +158,7 @@ export default function App() {
     semester: 1,
     chapters: [],
     questionCount: 0,
-    fontSize: 2, // 1=sm, 2=base, 3=lg
+    fontSize: 3, // New: 1=xs, 2=sm, 3=base, 4=lg, 5=xl
     timerEnabled: false,
     questionTypes: ['multiple_choice', 'essay', 'true_false'],
   });
@@ -140,14 +171,41 @@ export default function App() {
     queue: [],
     currentQuestion: null,
     loopState: { active: false, streak: 0, parentId: null },
+    currentStreak: 0, // Reset general streak
     timeLeft: 0,
     isWaitingForNext: false,
     lastAnswerCorrect: null,
+    showConfetti: false, // Controls confetti animation
+    // Fix: Add animation-related properties to QuizState
+    animatingOptionValue: null, 
+    animationFeedback: null, 
+    correctAnswerOptionValue: null,
+    elapsedTime: 0, // New: Initialize elapsed time
+    questionAttempts: [], // New: Track individual question outcomes
+    confettiKey: 0, // New: Key to force remounting ConfettiPop
   });
 
   const [inputText, setInputText] = useState('');
   const [isProcessing, setIsProcessing] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  
+  // Removed Smart Coach Feedback State
+  const [learningSuggestions, setLearningSuggestions] = useState<string | null>(null); // New: State for learning suggestions
+  // Removed isGeneratingLearningSuggestions as we use 'analyzing' status now
+
+
+  // Audio refs for correct/wrong answers
+  const correctAudio = useRef<HTMLAudioElement | null>(null);
+  const wrongAudio = useRef<HTMLAudioElement | null>(null);
+
+  // Effect to assign audio elements to refs after component mounts
+  useEffect(() => {
+    // Using more reliable public domain sounds
+    correctAudio.current = new Audio('https://www.soundjay.com/buttons/button-10.mp3'); 
+    wrongAudio.current = new Audio('https://www.soundjay.com/misc/fail-buzzer-01.mp3'); 
+    if (correctAudio.current) correctAudio.current.muted = true;
+    if (wrongAudio.current) wrongAudio.current.muted = true;
+  }, []);
 
   // --- Helpers ---
   const scrollToBottom = () => {
@@ -161,10 +219,11 @@ export default function App() {
   // Audio Auto-play
   useEffect(() => {
     const lastMsg = gameState.history[gameState.history.length - 1];
-    if (lastMsg && lastMsg.sender === 'teacher' && lastMsg.isQuestion && !gameState.isWaitingForNext) {
+    // Fix: Access animationFeedback property correctly
+    if (lastMsg && lastMsg.sender === 'teacher' && lastMsg.isQuestion && !gameState.isWaitingForNext && gameState.animationFeedback === null) {
       handlePlayAudio(lastMsg.text);
     }
-  }, [gameState.history.length]);
+  }, [gameState.history.length, gameState.isWaitingForNext, gameState.animationFeedback]);
 
   // Reset Dependent Settings when Level Changes
   useEffect(() => {
@@ -203,10 +262,11 @@ export default function App() {
     }
   };
 
-  // Timer Logic
+  // Per-question Timer Logic
   useEffect(() => {
     let interval: number;
-    if (gameState.status === 'quiz' && settings.timerEnabled && gameState.timeLeft > 0 && !gameState.isWaitingForNext) {
+    // Fix: Access animationFeedback property correctly
+    if (gameState.status === 'quiz' && settings.timerEnabled && gameState.timeLeft > 0 && !gameState.isWaitingForNext && gameState.animationFeedback === null) {
       interval = window.setInterval(() => {
         setGameState(prev => {
           if (prev.timeLeft <= 1) {
@@ -218,7 +278,18 @@ export default function App() {
       }, 1000);
     }
     return () => clearInterval(interval);
-  }, [gameState.status, settings.timerEnabled, gameState.timeLeft, gameState.isWaitingForNext]);
+  }, [gameState.status, settings.timerEnabled, gameState.timeLeft, gameState.isWaitingForNext, gameState.animationFeedback]);
+
+  // Global Elapsed Timer Logic
+  useEffect(() => {
+    let elapsedInterval: number;
+    if (gameState.status === 'quiz') {
+      elapsedInterval = window.setInterval(() => {
+        setGameState(prev => ({ ...prev, elapsedTime: prev.elapsedTime + 1 }));
+      }, 1000);
+    }
+    return () => clearInterval(elapsedInterval);
+  }, [gameState.status]);
 
   const calculateTotalQuestions = () => {
     const count = QUESTIONS_DB.filter(q => 
@@ -273,90 +344,167 @@ export default function App() {
       status: 'quiz',
       score: 0,
       totalAnswered: 0,
+      // Fix: Explicitly assert the type of the array of messages to ChatMessage[]
       history: [{
         id: 'intro',
         sender: 'teacher',
         text: `Halo! Mari kita mulai belajar ${settings.subjects.join(', ')} Kelas ${settings.grade}. Semangat! 🚀\n\n${firstQ.question}`,
         imagePrompts: firstQ.image_prompt ? [firstQ.image_prompt] : [],
         isQuestion: true
-      }],
+      }] as ChatMessage[],
       queue: initialQueue,
       currentQuestion: firstQ,
       loopState: { active: false, streak: 0, parentId: null },
-      timeLeft: settings.timerEnabled && firstQ.type === 'essay' ? 120 : 0,
+      currentStreak: 0, // Reset general streak
+      timeLeft: settings.timerEnabled ? (firstQ.type === 'essay' ? 120 : 60) : 0, // Set initial time based on question type
       isWaitingForNext: false,
-      lastAnswerCorrect: null
+      lastAnswerCorrect: null,
+      showConfetti: false,
+      // Fix: Initialize new animation-related state properties
+      animatingOptionValue: null,
+      animationFeedback: null,
+      correctAnswerOptionValue: null,
+      elapsedTime: 0, // Reset elapsed time for a new quiz
+      questionAttempts: [], // New: Reset question attempts
+      confettiKey: 0, // New: Reset confetti key for a new quiz
     });
+    setLearningSuggestions(null); // New: Clear previous suggestions
   };
 
   // --- Logic: Answering ---
   const handleAnswerSubmit = async (answer: string | null, timeUp = false) => {
-    if (isProcessing || gameState.isWaitingForNext) return;
+    // 1. Pre-check and initial state
+    if (isProcessing || gameState.animationFeedback !== null || gameState.isWaitingForNext) return;
     setIsProcessing(true);
+    stopAudio(); 
 
     const currentQ = gameState.currentQuestion;
-    if (!currentQ) return;
+    if (!currentQ) {
+      setIsProcessing(false);
+      return;
+    }
 
     const userAns = answer ? answer.trim() : "Waktu Habis";
     const correctAns = currentQ.correct_answer;
+
+    // 2. Immediate UI updates (user answer & optional thinking message)
+    const userMsg: ChatMessage = {
+        id: Date.now().toString(),
+        sender: 'student',
+        text: userAns,
+    };
     
+    // Create thinking message only for essay questions
+    const thinkingMsgId = currentQ.type === 'essay' ? Date.now().toString() + '_thinking' : null;
+    const thinkingMsg: ChatMessage | null = thinkingMsgId ? {
+        id: thinkingMsgId,
+        sender: 'teacher',
+        text: "Jawabanmu sedang dinilai.....",
+    } : null;
+
+    setGameState(prev => ({
+        ...prev,
+        history: [...prev.history, userMsg, ...(thinkingMsg ? [thinkingMsg] : [])],
+    }));
+    setInputText(""); // Clear input immediately for all types
+
+    // This part runs without delay for correctness/feedback logic
     let isCorrect = false;
     let aiFeedback = "";
 
-    if (!timeUp && answer) {
-        if (currentQ.type === 'essay') {
-            try {
-              const grade = await gradeEssayWithGemini(userAns, correctAns);
-              isCorrect = grade.score >= 70;
-              aiFeedback = `${grade.score >= 70 ? '👍' : '🤔'} (Skor: ${grade.score})\n${grade.feedback}`;
-            } catch (e) {
-              isCorrect = userAns.toLowerCase().includes(correctAns.toLowerCase());
-            }
-        } else {
-            isCorrect = userAns.toLowerCase() === correctAns.toLowerCase();
+    // 3. Determine correctness and AI feedback (async for essay, sync for others)
+    if (currentQ.type === 'essay' && !timeUp && answer) {
+        try {
+            const grade = await gradeEssayWithGemini(userAns, correctAns);
+            isCorrect = grade.score >= 50;
+            aiFeedback = `${grade.score >= 50 ? '👍' : '🤔'} (Skor: ${grade.score})\n${grade.feedback}`;
+        } catch (e) {
+            console.error("Error grading essay with Gemini:", e);
+            isCorrect = userAns.toLowerCase().includes(correctAns.toLowerCase());
+            aiFeedback = `Gagal menilai dengan AI. Jawaban yang benar adalah: ${correctAns}.`;
         }
-    }
-
-    const userMsg: ChatMessage = {
-      id: Date.now().toString(),
-      sender: 'student',
-      text: userAns,
-    };
-
-    setGameState(prev => ({
-      ...prev,
-      history: [...prev.history, userMsg]
-    }));
-    setInputText("");
-    stopAudio();
-
-    await handleTurn(isCorrect, currentQ, aiFeedback);
-  };
-
-  const handleTurn = async (isCorrect: boolean, question: QuestionData, customFeedback?: string) => {
-    let feedbackText = "";
-    if (customFeedback) {
-        feedbackText = customFeedback;
-    } else {
-        feedbackText = isCorrect 
+    } else if (timeUp) {
+        aiFeedback = `Waktu habis! Jawaban yang benar adalah: ${correctAns}.`;
+    } else { // For multiple_choice/true_false
+        isCorrect = userAns.toLowerCase() === correctAns.toLowerCase();
+        aiFeedback = isCorrect 
             ? "Benar! 🎉 Hebat sekali!" 
-            : `Kurang tepat. Jawaban yang benar adalah: ${question.correct_answer}. 😔`;
+            : `Kurang tepat. Jawaban yang benar adalah: ${correctAns}. 😔`;
     }
-    
+
+    // 4. Trigger animations/sounds and update temporary state for animation feedback
     setGameState(prev => ({
-      ...prev,
-      history: [...prev.history, {
-        id: Date.now().toString() + '_fb',
-        sender: 'teacher',
-        text: feedbackText
-      }],
-      isWaitingForNext: true,
-      lastAnswerCorrect: isCorrect
+        ...prev,
+        animatingOptionValue: userAns, 
+        animationFeedback: isCorrect ? 'correct' : 'wrong',
+        correctAnswerOptionValue: isCorrect ? null : correctAns,
+        showConfetti: isCorrect,
+        confettiKey: isCorrect ? prev.confettiKey + 1 : prev.confettiKey,
+        questionAttempts: [...prev.questionAttempts, { 
+          questionId: currentQ.id, 
+          isCorrect: isCorrect,
+          subject: currentQ.subject,
+          chapter: currentQ.chapter,
+        }],
     }));
 
-    setIsProcessing(false);
-    await handlePlayAudio(feedbackText);
+    if (isCorrect) {
+        correctAudio.current?.play();
+    } else {
+        wrongAudio.current?.play();
+    }
+
+    // 5. Delayed final UI update
+    setTimeout(async () => {
+        // Calculate the streak value that *will be committed* to state
+        const futureCurrentStreak = isCorrect ? gameState.currentStreak + 1 : 0; 
+
+        let finalFeedbackText = aiFeedback;
+
+        // Adjust feedback message based on streak, using futureCurrentStreak for message content
+        if (isCorrect && futureCurrentStreak >= 3) {
+            finalFeedbackText = `Luar biasa! 🔥 Streakmu ${futureCurrentStreak}! ${aiFeedback.replace('Benar! 🎉 Hebat sekali!', '')}`;
+        } else if (!isCorrect && gameState.currentStreak > 0) {
+            // If wrong, and there _was_ a streak, report the *old* streak before it reset
+            finalFeedbackText = `Ups, streakmu terhenti di ${gameState.currentStreak}. Jangan menyerah! ${aiFeedback}`;
+        }
+
+        const finalTeacherMsg: ChatMessage = {
+            id: Date.now().toString() + '_fb',
+            sender: 'teacher',
+            text: finalFeedbackText
+        } as ChatMessage;
+
+        setGameState(prev => {
+            let updatedHistory = [...prev.history];
+            if (thinkingMsgId) {
+                // Replace the thinking message with the final teacher feedback
+                updatedHistory = updatedHistory.map(msg => 
+                    msg.id === thinkingMsgId ? finalTeacherMsg : msg
+                );
+            } else {
+                // For non-essay questions where no thinking message was added, just append the feedback
+                updatedHistory.push(finalTeacherMsg);
+            }
+
+            return {
+                ...prev,
+                history: updatedHistory,
+                isWaitingForNext: true,
+                lastAnswerCorrect: isCorrect,
+                currentStreak: futureCurrentStreak, // Set the new streak value in state
+                animatingOptionValue: null,
+                animationFeedback: null,
+                correctAnswerOptionValue: null,
+                showConfetti: false,
+            };
+        });
+        setIsProcessing(false); // Crucial to release input after everything
+        await handlePlayAudio(finalFeedbackText); 
+    }, 2000); // The 2-second animation/feedback display delay
   };
+
+  // `handleTurn` is removed as its logic is now incorporated into `handleAnswerSubmit`'s setTimeout.
 
   // --- Core Logic: Navigation & Looping ---
   const handleNextQuestion = () => {
@@ -367,7 +515,7 @@ export default function App() {
       if (!question) return prev;
 
       let newScore = prev.score;
-      let newHistory = [...prev.history];
+      let newHistory: ChatMessage[] = [...prev.history];
       let newQueue = [...prev.queue];
       let newLoopState = { ...prev.loopState };
       let nextQuestion: QuestionData | null = null;
@@ -380,37 +528,8 @@ export default function App() {
 
       const isProxy = question.id.endsWith('_proxy');
       
-      // Determine the "Main" question object (Parent)
-      // If currently looking at proxy, parent is hidden in closure, but we can reconstruct or find it.
-      // Ideally we stored parentId in loopState.
-      // However, to keep it simple, we need access to the Main Question and Proxy Question.
-      // The `question` object itself might be the Main, or the Proxy.
-      // If it's the Proxy, we don't easily have the Main unless we stored it.
-      // BUT: `question.proxy` exists on the Main. 
-      // Strategy: When entering loop, store the FULL Main question in state or use ID to find it?
-      // Since `queue` has popped it, we need to rely on `currentQuestion` or a stored "Problem Question".
-
-      // Let's refine loopState to store the active main question data to easily toggle.
-      // However, existing type is `parentId: string`. 
-      // We can rely on: 
-      // If Main -> Proxy is `question.proxy`.
-      // If Proxy -> Main is ... we need to store Main in a temporary place or just toggle ID logic?
-      // Better: When starting loop, keep Main in `currentQuestion` but conceptually render Proxy?
-      // No, `currentQuestion` drives the UI.
-      
-      // We need to fetch the Main Question from DB if we are in Proxy and need to go back to Main?
-      // Or just keep it in loopState. Ideally loopState should hold the `mainQuestion` object.
-      // For now, let's use a hack: QUESTIONS_DB contains all questions. We can find by ID.
-      // `parentId` in `loopState` is the ID of the Main Question.
-      
       const getOriginalMain = (id: string): QuestionData | undefined => {
-         // Flatten DB is hard because of filtering.
-         // But we can just use the `question` if it IS the main.
-         // If it is proxy, we need to find parent. 
-         // Let's assume we can pass the main question object into `loopState` as `mainQuestion`.
-         // But I can't change `types.ts` easily in this step without breaking other things?
-         // I'll assume I can find it in QUESTIONS_DB.
-         return QUESTIONS_DB.find(q => q.id === id);
+         return QUESTIONS_DB.find(q => q.id === id.replace('_proxy', '')); // Find original by removing suffix
       };
 
       if (prev.loopState.active && prev.loopState.parentId) {
@@ -481,22 +600,24 @@ export default function App() {
 
       let status: QuizState['status'] = prev.status;
       if (!nextQuestion) {
-        status = 'summary';
+        status = 'analyzing'; // Changed from 'summary' to 'analyzing'
+        // Fix: Explicitly assert the type of the message object to ChatMessage
         newHistory.push({
            id: 'end',
            sender: 'teacher',
            text: "Sesi latihan selesai! Mari kita lihat nilaimu."
-        });
+        } as ChatMessage);
       } else {
+        // Fix: Explicitly assert the type of the message object to ChatMessage
         newHistory.push({
           id: nextQuestion.id + '_' + Date.now(),
           sender: 'teacher',
           text: nextQuestion.question,
           imagePrompts: nextQuestion.image_prompt ? [nextQuestion.image_prompt] : [],
           isQuestion: true
-        });
-        if (settings.timerEnabled && nextQuestion.type === 'essay') {
-            nextTime = 120;
+        } as ChatMessage);
+        if (settings.timerEnabled && nextQuestion) { // Check if nextQuestion exists
+            nextTime = nextQuestion.type === 'essay' ? 120 : 60; // Set time based on next question type
         }
       }
 
@@ -511,14 +632,20 @@ export default function App() {
         timeLeft: nextTime,
         totalAnswered: newTotalAnswered,
         isWaitingForNext: false,
-        lastAnswerCorrect: null
+        lastAnswerCorrect: null,
+        showConfetti: false, // Ensure confetti is off for next question
+        // Fix: Reset new animation-related state properties
+        animatingOptionValue: null,
+        animationFeedback: null,
+        correctAnswerOptionValue: null,
+        // elapsedTime is kept running by its own useEffect, no reset here
       };
     });
   };
 
   const handleStop = () => {
     stopAudio();
-    setGameState(prev => ({ ...prev, status: 'summary' }));
+    setGameState(prev => ({ ...prev, status: 'analyzing' })); // Changed from 'summary' to 'analyzing'
   };
 
   const handleRestart = () => {
@@ -531,17 +658,84 @@ export default function App() {
       queue: [],
       currentQuestion: null,
       loopState: { active: false, streak: 0, parentId: null },
+      currentStreak: 0, // Reset general streak
       timeLeft: 0,
       isWaitingForNext: false,
       lastAnswerCorrect: null,
+      showConfetti: false,
+      // Fix: Reset new animation-related state properties
+      animatingOptionValue: null,
+      animationFeedback: null,
+      correctAnswerOptionValue: null,
+      elapsedTime: 0, // Reset elapsed time on restart
+      questionAttempts: [], // New: Reset question attempts
+      confettiKey: 0, // New: Reset confetti key on restart
     });
+    setLearningSuggestions(null); // New: Clear previous suggestions
+  };
+
+  // New Effect to generate Learning Suggestions AND Background Audio when in 'analyzing' state
+  useEffect(() => {
+    if (gameState.status === 'analyzing' && learningSuggestions === null) {
+      const processResults = async () => {
+        // 1. Aggregate mistakes by subject and chapter
+        const mistakesMap = new Map<string, { subject: string; chapter: number; count: number }>();
+        gameState.questionAttempts.forEach(attempt => {
+          if (!attempt.isCorrect) {
+            const key = `${attempt.subject}-${attempt.chapter}`;
+            if (mistakesMap.has(key)) {
+              mistakesMap.get(key)!.count++;
+            } else {
+              mistakesMap.set(key, { subject: attempt.subject, chapter: attempt.chapter, count: 1 });
+            }
+          }
+        });
+        const aggregatedMistakes = Array.from(mistakesMap.values());
+
+        // 2. Generate Text Suggestions (AI)
+        const suggestionsText = await generateLearningSuggestionsWithGemini(
+          aggregatedMistakes,
+          settings.level
+        );
+        
+        // 3. Generate Audio Buffer in the background (Pre-load audio)
+        // This runs while the user still sees the "Analyzing" screen
+        let audioBuffer: AudioBuffer | null = null;
+        try {
+           audioBuffer = await generateGeminiAudio(suggestionsText);
+        } catch (e) {
+           console.error("Failed to generate audio buffer", e);
+        }
+
+        // 4. Update state to show summary
+        setLearningSuggestions(suggestionsText);
+        setGameState(prev => ({ ...prev, status: 'summary' }));
+
+        // 5. Play audio immediately after showing summary
+        if (audioBuffer) {
+           await playAudioBuffer(audioBuffer);
+        } else {
+           // Fallback to Native TTS if Gemini Audio failed
+           await playNativeTTS(suggestionsText);
+        }
+      };
+
+      processResults();
+    }
+  }, [gameState.status, learningSuggestions, gameState.questionAttempts, settings.level]);
+
+
+  const formatTime = (totalSeconds: number) => {
+    const minutes = Math.floor(totalSeconds / 60);
+    const seconds = totalSeconds % 60;
+    return `${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`;
   };
 
   const renderSetup = () => {
     const theme = THEME[settings.level];
     const availableSubjects = getSubjects(settings.level, settings.grade);
-    const totalAvailable = calculateTotalQuestions();
-    
+    // const totalAvailable = calculateTotalQuestions(); // Not used directly in render
+
     // Config for grades per level
     const gradeOptions = settings.level === 'SD' ? [1,2,3,4,5,6] : settings.level === 'SMP' ? [7,8,9] : [10,11,12];
 
@@ -666,6 +860,24 @@ export default function App() {
                    className={`w-full h-2 bg-gray-200 rounded-lg appearance-none cursor-pointer accent-${theme.accent}-500`}
                  />
              </div>
+             {/* New: Font Size Adjustment */}
+             <div className="mt-4">
+                 <div className="flex justify-between text-xs text-gray-500 font-bold mb-1">
+                    <span>Ukuran Font</span>
+                    <span>
+                      {settings.fontSize === 1 ? 'Sangat Kecil' : 
+                       settings.fontSize === 2 ? 'Kecil' : 
+                       settings.fontSize === 3 ? 'Sedang' : 
+                       settings.fontSize === 4 ? 'Besar' : 'Sangat Besar'}
+                    </span>
+                 </div>
+                 <input 
+                   type="range" min="1" max="5" step="1" 
+                   value={settings.fontSize}
+                   onChange={(e) => setSettings(s => ({...s, fontSize: parseInt(e.target.value)}))}
+                   className={`w-full h-2 bg-gray-200 rounded-lg appearance-none cursor-pointer accent-${theme.accent}-500`}
+                 />
+             </div>
         </div>
 
         <button 
@@ -681,19 +893,54 @@ export default function App() {
 
   const renderQuiz = () => {
     const theme = THEME[settings.level];
-    const fontSizeClass = settings.fontSize === 1 ? 'text-sm' : settings.fontSize === 3 ? 'text-lg' : 'text-base';
+    // Dynamic font size class based on settings
+    const fontSizeClass = 
+      settings.fontSize === 1 ? 'text-xs' :
+      settings.fontSize === 2 ? 'text-sm' :
+      settings.fontSize === 4 ? 'text-lg' :
+      settings.fontSize === 5 ? 'text-xl' : 'text-base'; // Default for 3
     
+    // Calculate questions remaining (total set - already answered)
+    // Note: totalAnswered increments on the *next* question, so for current display,
+    // if currentQuestion exists, it's one more question than totalAnswered.
+    // If we're at the summary, currentQuestion is null, so it's just totalAnswered.
+    const questionsLeft = settings.questionCount - (gameState.totalAnswered + (gameState.currentQuestion ? 1 : 0)) + (gameState.loopState.active ? 1 : 0);
+    // Ensure questionsLeft doesn't go below 0
+    const displayQuestionsLeft = Math.max(0, questionsLeft);
+
     return (
       <div className={`flex flex-col h-screen bg-slate-50 ${fontSizeClass}`}>
         {/* Header */}
         <div className="bg-white px-4 py-3 shadow-md flex items-center justify-between sticky top-0 z-20">
           <div className="flex items-center gap-3">
+            {/* Current Question Number */}
             <div className={`w-10 h-10 ${theme.secondary} rounded-full flex items-center justify-center ${theme.text} font-bold border ${theme.border} shadow-sm`}>
-               {gameState.history.filter(m => m.sender === 'teacher' && m.isQuestion).length}
+               {gameState.totalAnswered + (gameState.currentQuestion ? 1 : 0)}
             </div>
-            {settings.timerEnabled && !gameState.isWaitingForNext && (
+
+            {/* Questions Left */}
+            <div className={`flex items-center gap-1 font-mono font-bold px-3 py-1 rounded-full bg-gray-100 text-gray-700`}>
+                <List size={16} /> {displayQuestionsLeft}
+            </div>
+
+            {/* Current Score */}
+            <div className={`flex items-center gap-1 font-mono font-bold px-3 py-1 rounded-full bg-green-100 text-green-700`}>
+                <CheckCircle size={16} /> {gameState.score}
+            </div>
+
+            {/* Per-question timer */}
+            {settings.timerEnabled && (
                 <div className={`flex items-center gap-1 font-mono font-bold px-3 py-1 rounded-full bg-gray-100 ${gameState.timeLeft < 10 ? 'text-red-500 bg-red-50' : 'text-gray-700'}`}>
                     <Clock size={16} /> {gameState.timeLeft}s
+                </div>
+            )}
+            {/* Global elapsed time */}
+            <div className={`flex items-center gap-1 font-mono font-bold px-3 py-1 rounded-full bg-blue-100 text-blue-700`}>
+                <Clock size={16} /> {formatTime(gameState.elapsedTime)}
+            </div>
+            {gameState.currentStreak > 0 && (
+                <div className={`flex items-center gap-1 font-mono font-bold px-3 py-1 rounded-full bg-yellow-100 text-yellow-700`}>
+                    <Flame size={16} className="text-yellow-500" /> {gameState.currentStreak}
                 </div>
             )}
           </div>
@@ -708,12 +955,27 @@ export default function App() {
           </div>
         </div>
 
+        {/* Confetti */}
+        {gameState.showConfetti && <ConfettiPop key={gameState.confettiKey} />}
+
         {/* Chat Area */}
         <div className="flex-1 overflow-y-auto p-4 space-y-6 chat-scroll pb-40">
           {gameState.history.map((msg) => (
-            <div key={msg.id} className={`chat ${msg.sender === 'teacher' ? 'chat-start' : 'chat-end'} flex flex-col ${msg.sender === 'student' ? 'items-end' : 'items-start'}`}>
+            <div 
+              key={msg.id} 
+              className={`chat ${msg.sender === 'teacher' ? 'chat-start' : 'chat-end'} flex flex-col ${msg.sender === 'student' ? 'items-end' : 'items-start'}`}
+            >
               <div className={`max-w-[85%] rounded-3xl p-5 shadow-sm border ${msg.sender === 'teacher' ? 'bg-white border-gray-100 text-gray-800 rounded-tl-none' : `${theme.primary} border-transparent text-white rounded-tr-none shadow-md`}`}>
-                 <div className="whitespace-pre-wrap leading-relaxed">{msg.text}</div>
+                 <div className="whitespace-pre-wrap leading-relaxed">
+                    {msg.id.endsWith('_thinking') ? (
+                       <div className="flex items-center gap-2 py-1">
+                          <Loader2 className="animate-spin text-gray-400" size={20} />
+                          <span className="italic text-gray-500 text-sm">Sedang menilai jawabanmu...</span>
+                       </div>
+                    ) : (
+                       msg.text
+                    )}
+                 </div>
                  
                  {/* Image Generation */}
                  {msg.imagePrompts && msg.imagePrompts.length > 0 && (
@@ -725,7 +987,7 @@ export default function App() {
                  )}
 
                  {/* Audio Control */}
-                 {msg.sender === 'teacher' && (
+                 {msg.sender === 'teacher' && !msg.id.endsWith('_thinking') && (
                    <div className="flex justify-end mt-2">
                      <button 
                        onClick={() => handlePlayAudio(msg.text)}
@@ -757,36 +1019,73 @@ export default function App() {
             <div className="max-w-3xl mx-auto">
                {gameState.currentQuestion.type === 'multiple_choice' && (
                  <div className="grid grid-cols-2 gap-2">
-                   {gameState.currentQuestion.options.map((opt, idx) => (
-                     <button
-                       key={idx}
-                       onClick={() => handleAnswerSubmit(opt.text)}
-                       disabled={isProcessing}
-                       className={`w-full text-left p-3 rounded-xl border border-gray-200 bg-white hover:${theme.secondary} hover:${theme.border} active:bg-gray-100 transition-all flex items-center gap-2 group shadow-sm`}
-                     >
-                       <div className="w-6 h-6 flex-shrink-0 rounded-full bg-gray-100 group-hover:bg-white group-hover:shadow-sm flex items-center justify-center text-xs font-bold text-gray-500 transition-colors">
-                         {String.fromCharCode(65 + idx)}
-                       </div>
-                       <div className="flex-1 min-w-0">
-                         <span className="block font-medium text-sm truncate leading-tight whitespace-normal line-clamp-2">{opt.text}</span>
-                         {opt.image_prompt && (
-                           <div className="mt-1">
-                             <ToggleableImage prompt={opt.image_prompt} label="Gbr" />
-                           </div>
-                         )}
-                       </div>
-                     </button>
-                   ))}
+                   {gameState.currentQuestion.options.map((opt, idx) => {
+                     // Fix: Access new animation-related state properties correctly
+                     const isSelectedAndAnimating = gameState.animatingOptionValue === opt.text;
+                     const isCorrectHighlight = gameState.animationFeedback === 'wrong' && gameState.correctAnswerOptionValue === opt.text;
+
+                     let buttonClasses = `w-full text-left p-3 rounded-xl border border-gray-200 bg-white hover:${theme.secondary} hover:${theme.border} active:bg-gray-100 transition-all flex items-center gap-2 group shadow-sm`;
+
+                     if (isSelectedAndAnimating) {
+                       if (gameState.animationFeedback === 'correct') {
+                         buttonClasses += ' glowing-green';
+                       } else if (gameState.animationFeedback === 'wrong') {
+                         buttonClasses += ' swing-red';
+                       }
+                     } else if (isCorrectHighlight) {
+                       buttonClasses += ' correct-highlight';
+                     }
+
+                     return (
+                       <button
+                         key={idx}
+                         onClick={() => handleAnswerSubmit(opt.text)}
+                         // Fix: Access animationFeedback property correctly
+                         disabled={isProcessing || gameState.animationFeedback !== null || gameState.isWaitingForNext}
+                         className={buttonClasses}
+                       >
+                         <div className="w-6 h-6 flex-shrink-0 rounded-full bg-gray-100 group-hover:bg-white group-hover:shadow-sm flex items-center justify-center text-xs font-bold text-gray-500 transition-colors">
+                           {String.fromCharCode(65 + idx)}
+                         </div>
+                         <div className="flex-1 min-w-0">
+                           <span className={`block font-medium truncate leading-tight whitespace-normal line-clamp-2 ${fontSizeClass}`}>{opt.text}</span>
+                           {opt.image_prompt && (
+                             <div className="mt-1">
+                               <ToggleableImage prompt={opt.image_prompt} label="Gbr" />
+                             </div>
+                           )}
+                         </div>
+                       </button>
+                     );
+                   })}
                  </div>
                )}
 
                {gameState.currentQuestion.type === 'true_false' && (
                  <div className="flex gap-4">
-                    <button onClick={() => handleAnswerSubmit("Benar")} disabled={isProcessing} className="flex-1 py-4 bg-green-50 text-green-700 hover:bg-green-100 rounded-xl font-bold border-2 border-green-200 flex items-center justify-center gap-2 transition-all shadow-sm">
-                        <CheckCircle size={24} /> Benar
+                    <button 
+                      onClick={() => handleAnswerSubmit("Benar")} 
+                      // Fix: Access new animation-related state properties correctly
+                      disabled={isProcessing || gameState.animationFeedback !== null || gameState.isWaitingForNext} 
+                      className={`flex-1 py-4 bg-green-50 text-green-700 hover:bg-green-100 rounded-xl font-bold border-2 border-green-200 flex items-center justify-center gap-2 transition-all shadow-sm
+                        ${gameState.animatingOptionValue === "Benar" && gameState.animationFeedback === 'correct' ? 'glowing-green' : ''}
+                        ${gameState.animatingOptionValue === "Benar" && gameState.animationFeedback === 'wrong' ? 'swing-red' : ''}
+                        ${gameState.animationFeedback === 'wrong' && gameState.correctAnswerOptionValue === "Benar" && gameState.animatingOptionValue !== "Benar" ? 'correct-highlight' : ''}
+                      `}
+                    >
+                        <CheckCircle size={24} /> <span className={fontSizeClass}>Benar</span>
                     </button>
-                    <button onClick={() => handleAnswerSubmit("Salah")} disabled={isProcessing} className="flex-1 py-4 bg-red-50 text-red-700 hover:bg-red-100 rounded-xl font-bold border-2 border-red-200 flex items-center justify-center gap-2 transition-all shadow-sm">
-                        <XCircle size={24} /> Salah
+                    <button 
+                      onClick={() => handleAnswerSubmit("Salah")} 
+                      // Fix: Access new animation-related state properties correctly
+                      disabled={isProcessing || gameState.animationFeedback !== null || gameState.isWaitingForNext} 
+                      className={`flex-1 py-4 bg-red-50 text-red-700 hover:bg-red-100 rounded-xl font-bold border-2 border-red-200 flex items-center justify-center gap-2 transition-all shadow-sm
+                        ${gameState.animatingOptionValue === "Salah" && gameState.animationFeedback === 'correct' ? 'glowing-green' : ''}
+                        ${gameState.animatingOptionValue === "Salah" && gameState.animationFeedback === 'wrong' ? 'swing-red' : ''}
+                        ${gameState.animationFeedback === 'wrong' && gameState.correctAnswerOptionValue === "Salah" && gameState.animatingOptionValue !== "Salah" ? 'correct-highlight' : ''}
+                      `}
+                    >
+                        <XCircle size={24} /> <span className={fontSizeClass}>Salah</span>
                     </button>
                  </div>
                )}
@@ -799,11 +1098,12 @@ export default function App() {
                       onChange={(e) => setInputText(e.target.value)}
                       onKeyDown={(e) => e.key === 'Enter' && handleAnswerSubmit(inputText)}
                       placeholder="Ketik jawabanmu di sini..."
-                      className={`flex-1 border-2 border-gray-200 rounded-full px-6 py-3 focus:outline-none focus:border-${theme.accent}-500 focus:ring-4 focus:ring-${theme.accent}-100 transition-all`}
+                      className={`flex-1 border-2 border-gray-200 rounded-full px-6 py-3 focus:outline-none focus:border-${theme.accent}-500 focus:ring-4 focus:ring-${theme.accent}-100 transition-all ${fontSizeClass}`}
                     />
                     <button 
                       onClick={() => handleAnswerSubmit(inputText)}
-                      disabled={!inputText.trim() || isProcessing}
+                      // Fix: Access animationFeedback property correctly
+                      disabled={!inputText.trim() || isProcessing || gameState.animationFeedback !== null || gameState.isWaitingForNext}
                       className={`${theme.primary} text-white p-4 rounded-full ${theme.hover} disabled:opacity-50 shadow-md transition-transform active:scale-95`}
                     >
                       <Send size={24} />
@@ -817,14 +1117,47 @@ export default function App() {
     );
   };
 
+  // New Render function for the Analyzing state
+  const renderAnalyzing = () => {
+    const theme = THEME[settings.level];
+    
+    return (
+      <div className={`min-h-screen bg-slate-50 flex flex-col items-center justify-center p-6 text-center animate-fade-in`}>
+         <div className="max-w-md w-full flex flex-col items-center">
+             <div className={`w-32 h-32 ${theme.secondary} rounded-full flex items-center justify-center mb-8 shadow-inner relative`}>
+                <BrainCircuit className={`text-${theme.accent}-500 animate-pulse`} size={64} />
+                <div className={`absolute -top-2 -right-2 w-8 h-8 ${theme.primary} rounded-full animate-bounce flex items-center justify-center text-white`}>
+                   <Lightbulb size={16} />
+                </div>
+             </div>
+             <h2 className={`text-2xl font-bold ${theme.textDark} mb-4`}>
+                Sedang Menganalisis Hasil Belajarmu...
+             </h2>
+             <div className="flex items-center gap-3 text-gray-500 bg-white px-6 py-3 rounded-full shadow-sm border border-gray-100">
+                <Loader2 className="animate-spin text-gray-400" size={20} />
+                <span className="font-medium text-sm">AI sedang menyiapkan saran & suara...</span>
+             </div>
+             <p className="mt-8 text-xs text-gray-400 max-w-xs leading-relaxed">
+               Mohon tunggu sebentar, Smart Coach sedang melihat kekuatan dan area yang perlu ditingkatkan.
+             </p>
+         </div>
+      </div>
+    );
+  };
+
   const renderSummary = () => {
     const theme = THEME[settings.level];
     const percentage = gameState.totalAnswered > 0 
         ? Math.round((gameState.score / gameState.totalAnswered) * 100) 
         : 0;
+    const fontSizeClass = 
+      settings.fontSize === 1 ? 'text-xs' :
+      settings.fontSize === 2 ? 'text-sm' :
+      settings.fontSize === 4 ? 'text-lg' :
+      settings.fontSize === 5 ? 'text-xl' : 'text-base'; // Default for 3
         
     return (
-      <div className="min-h-screen bg-slate-50 flex flex-col items-center justify-center p-6 text-center">
+      <div className={`min-h-screen bg-slate-50 flex flex-col items-center justify-center p-6 text-center ${fontSizeClass} animate-fade-in`}>
          <div className="max-w-md w-full bg-white p-8 rounded-3xl shadow-xl">
              <div className={`w-32 h-32 ${theme.secondary} rounded-full flex items-center justify-center mx-auto mb-6 shadow-inner`}>
                 <span className="text-6xl animate-bounce">🏆</span>
@@ -850,9 +1183,32 @@ export default function App() {
              </div>
              <div className="text-xl font-bold text-gray-700 mb-10">Nilai Akhir: <span className={theme.text}>{percentage}</span></div>
 
+             {/* Total Elapsed Time in Summary */}
+             <div className="flex items-center justify-center gap-2 text-gray-600 font-bold mb-6">
+                <Clock size={20} className="text-blue-500" />
+                <span>Waktu Pengerjaan: {formatTime(gameState.elapsedTime)}</span>
+             </div>
+
+             {/* New: Learning Suggestions Section */}
+             <div className="mt-8 pt-6 border-t border-gray-100">
+                <h2 className="text-2xl font-bold text-gray-800 mb-4 flex items-center justify-center gap-2">
+                    <Lightbulb size={24} className="text-yellow-500" /> Saran Belajar Tambahan
+                </h2>
+                {learningSuggestions ? (
+                    <p className="text-gray-700 text-sm leading-relaxed whitespace-pre-wrap">
+                        {learningSuggestions}
+                    </p>
+                ) : (
+                    <p className="text-gray-400 italic text-sm">
+                        Tidak ada saran khusus.
+                    </p>
+                )}
+             </div>
+
+
              <button 
                onClick={handleRestart}
-               className={`w-full py-4 ${theme.primary} text-white rounded-2xl font-bold text-xl shadow-lg ${theme.hover} transition-transform active:scale-95 flex items-center justify-center gap-2`}
+               className={`w-full py-4 ${theme.primary} text-white rounded-2xl font-bold text-xl shadow-lg ${theme.hover} transition-transform active:scale-95 flex items-center justify-center gap-2 mt-8`}
              >
                <Play size={24} fill="currentColor" /> Main Lagi
              </button>
@@ -865,6 +1221,7 @@ export default function App() {
     <>
       {gameState.status === 'setup' && renderSetup()}
       {gameState.status === 'quiz' && renderQuiz()}
+      {gameState.status === 'analyzing' && renderAnalyzing()}
       {gameState.status === 'summary' && renderSummary()}
     </>
   );

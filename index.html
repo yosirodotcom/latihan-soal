@@ -28,6 +28,86 @@
         from { opacity: 0; transform: translateY(10px); }
         to { opacity: 1; transform: translateY(0); }
       }
+      /* Confetti-like pop animation for correct answers - now for a single large icon */
+      .confetti-pop {
+        animation: pop-fade 2s ease-out forwards; /* Changed to 2s */
+        position: absolute;
+        opacity: 0;
+        transform: scale(0.5);
+        pointer-events: none; /* Allows clicks through it */
+        color: #34d399; /* Tailwind green-500 */
+      }
+
+      @keyframes pop-fade {
+        0% {
+          opacity: 1;
+          transform: scale(0.5) translateY(0);
+        }
+        50% {
+          opacity: 1;
+          transform: scale(1.8) translateY(-40px); /* Larger scale and higher lift */
+        }
+        100% {
+          opacity: 0;
+          transform: scale(2.0) translateY(-80px); /* Even larger and fades out higher */
+        }
+      }
+
+      /* Subtler glowing green effect for correct answer buttons */
+      .glowing-green {
+        animation: subtle-glow-green 2s infinite alternate ease-in-out; /* Changed to 2s */
+        border-color: #a7f3d0 !important; /* Keep border color consistent */
+      }
+
+      @keyframes subtle-glow-green {
+        0% {
+          /* Start with a soft, warm glow */
+          box-shadow: 0 0 6px rgba(52, 211, 153, 0.4); /* Initial subtle glow */
+          background-color: #e6ffee; /* Very light green, slightly warmer */
+          transform: scale(1); /* Ensure no unintended scaling */
+        }
+        50% {
+          /* Peak of the glow - stronger and slightly expanded */
+          box-shadow: 0 0 16px rgba(52, 211, 153, 0.8), 0 0 24px rgba(52, 211, 153, 0.6);
+          background-color: #c0f2d8; /* Brighter green for the peak */
+          transform: scale(1.01); /* Subtle "breathing" scale */
+        }
+        100% {
+          /* Return to the initial soft state for smooth looping */
+          box-shadow: 0 0 8px rgba(52, 211, 153, 0.5);
+          background-color: #e6ffee; /* Match 0% background */
+          transform: scale(1);
+        }
+      }
+
+      /* Existing swing-red (ensure it's compatible or also refined) */
+      .swing-red {
+        animation: swing-shake 2s ease-in-out forwards; /* Changed to 2s and added forwards */
+        border-color: #fca5a5 !important; /* Tailwind red-300 */
+        background-color: #fee2e2 !important; /* Tailwind red-100 */
+        color: #ef4444 !important; /* Tailwind red-500 */
+      }
+
+      @keyframes swing-shake {
+        0% { transform: translateX(0); }
+        25% { transform: translateX(-5px) rotate(-2deg); }
+        50% { transform: translateX(5px) rotate(2deg); }
+        75% { transform: translateX(-3px) rotate(-1deg); }
+        100% { transform: translateX(0); }
+      }
+
+      /* Add/refine correct-highlight if needed for wrong answers */
+      .correct-highlight {
+        background-color: #dcfce7 !important; /* Tailwind green-50 */
+        border-color: #bbf7d0 !important; /* Tailwind green-200 */
+        color: #16a34a !important; /* Tailwind green-600 */
+        animation: fade-highlight 2s ease-out forwards; /* Changed to 2s */
+      }
+
+      @keyframes fade-highlight {
+        from { opacity: 0.5; }
+        to { opacity: 1; }
+      }
     </style>
   <script type="importmap">
 {
@@ -39,6 +119,15 @@
     "react-dom/": "https://aistudiocdn.com/react-dom@^19.2.0/"
   }
 }
+</script>
+<script>
+  // Expose environment variables for client-side use
+  window.process = {
+    env: {
+      UNSPLASH_API_KEY: process.env.UNSPLASH_API_KEY, // Updated to use dynamic env var
+      API_KEY: '' 
+    }
+  };
 </script>
 </head>
   <body class="bg-slate-50">
