@@ -332,7 +332,7 @@ export const gradeEssayWithGemini = async (userAnswer: string, correctAnswer: st
 
 // New: Gemini function to generate learning suggestions
 export const generateLearningSuggestionsWithGemini = async (
-  aggregatedMistakes: Array<{ subject: string; chapter: number; count: number }>,
+  wrongQuestions: Array<{ question: string; subject: string; chapter: number }>,
   level: SchoolLevel
 ): Promise<string> => {
   if (!process.env.API_KEY) {
@@ -344,34 +344,34 @@ export const generateLearningSuggestionsWithGemini = async (
     const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
     const model = 'gemini-3-pro-preview'; // Use a pro model for better reasoning
 
-    let mistakeSummary = "Siswa tidak memiliki kesalahan spesifik yang tercatat.";
-    if (aggregatedMistakes.length > 0) {
-      mistakeSummary = "Berdasarkan kesalahan yang tercatat, siswa kesulitan pada topik berikut:\n";
-      aggregatedMistakes.forEach(mistake => {
-        mistakeSummary += `- Mata Pelajaran: ${mistake.subject}, Bab: ${mistake.chapter} (Total kesalahan: ${mistake.count} soal)\n`;
+    let mistakeSummary = "Siswa menjawab semua soal dengan benar.";
+    if (wrongQuestions.length > 0) {
+      mistakeSummary = "Berikut adalah pertanyaan-pertanyaan yang dijawab SALAH oleh siswa:\n";
+      wrongQuestions.forEach(q => {
+        mistakeSummary += `- Mata Pelajaran ${q.subject} (Bab ${q.chapter}): "${q.question}"\n`;
       });
     }
 
-    const prompt = `Kamu adalah seorang guru dan 'Smart Coach' yang memberikan saran belajar personal.
-    
-    Berikut adalah ringkasan area di mana siswa mengalami kesulitan selama kuis:
+    const prompt = `Analisis kesalahan kuis siswa berikut (Jenjang ${level}):
     ${mistakeSummary}
 
-    Jenjang Sekolah: ${level}
-
-    Berikan saran belajar yang spesifik dan actionable dalam Bahasa Indonesia untuk membantu siswa meningkatkan pemahaman pada area yang disebutkan. Jika tidak ada kesalahan spesifik, berikan saran umum untuk menjaga dan meningkatkan performa.
-    Saran harus mencakup:
-    1. Sumber belajar yang bisa digunakan (misal: buku pelajaran, video edukasi, latihan soal).
-    2. Metode belajar yang efektif (misal: membuat rangkuman, diskusi kelompok, mengulang konsep).
-    3. Pentingnya konsistensi.
+    Tugas:
+    Identifikasi **TOPIK SPESIFIK** atau **KONSEP** yang belum dipahami siswa berdasarkan isi pertanyaan yang salah tersebut (contoh: "Konsep Hewan Vertebrata", "Penjumlahan 2 digit", "Penggunaan To Be").
     
-    Tuliskan dalam bentuk paragraf yang padat dan informatif.`;
+    Berikan saran belajar yang:
+    1. SANGAT SINGKAT (Maksimal 3 kalimat).
+    2. Langsung menyebutkan nama topik/materi spesifik yang perlu dipelajari ulang. JANGAN hanya menyebut "Bab 1" atau nama Mata Pelajarannya saja, tapi sebutkan konsep intinya.
+    3. Hindari kata-kata motivasi umum (seperti "belajar lebih giat", "jangan menyerah").
+    4. Gunakan Bahasa Indonesia yang santai namun jelas.
+
+    Contoh Output Bagus:
+    "Kamu perlu mempelajari kembali tentang **Hewan Vertebrata** dan ciri-cirinya. Selain itu, perkuat pemahamanmu tentang **perkalian dasar** agar lebih teliti."`;
 
     const response: GenerateContentResponse = await ai.models.generateContent({
       model: model,
       contents: prompt,
       config: {
-        temperature: 0.8, // Slightly higher temperature for more diverse suggestions
+        temperature: 0.4, // Balanced creativity and focus
       },
     });
 

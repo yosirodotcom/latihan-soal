@@ -262,6 +262,20 @@ export default function App() {
     }
   };
 
+  // Helper to render bold text from markdown-style **text**
+  const renderFormattedText = (text: string) => {
+    // Split by ** to separate bold parts
+    const parts = text.split('**');
+    return parts.map((part, index) => {
+      // Odd indices are the text between ** **, so they should be bold
+      if (index % 2 === 1) {
+        return <strong key={index} className="font-extrabold text-gray-900">{part}</strong>;
+      }
+      // Even indices are normal text
+      return <span key={index}>{part}</span>;
+    });
+  };
+
   // Per-question Timer Logic
   useEffect(() => {
     let interval: number;
@@ -678,23 +692,21 @@ export default function App() {
   useEffect(() => {
     if (gameState.status === 'analyzing' && learningSuggestions === null) {
       const processResults = async () => {
-        // 1. Aggregate mistakes by subject and chapter
-        const mistakesMap = new Map<string, { subject: string; chapter: number; count: number }>();
-        gameState.questionAttempts.forEach(attempt => {
-          if (!attempt.isCorrect) {
-            const key = `${attempt.subject}-${attempt.chapter}`;
-            if (mistakesMap.has(key)) {
-              mistakesMap.get(key)!.count++;
-            } else {
-              mistakesMap.set(key, { subject: attempt.subject, chapter: attempt.chapter, count: 1 });
-            }
-          }
-        });
-        const aggregatedMistakes = Array.from(mistakesMap.values());
+        // 1. Gather wrong questions with text instead of just aggregated counts
+        const wrongQuestions = gameState.questionAttempts
+            .filter(attempt => !attempt.isCorrect)
+            .map(attempt => {
+                const qData = QUESTIONS_DB.find(q => q.id === attempt.questionId);
+                return {
+                    question: qData?.question || "Pertanyaan tidak diketahui",
+                    subject: attempt.subject,
+                    chapter: attempt.chapter
+                };
+            });
 
         // 2. Generate Text Suggestions (AI)
         const suggestionsText = await generateLearningSuggestionsWithGemini(
-          aggregatedMistakes,
+          wrongQuestions,
           settings.level
         );
         
@@ -1196,7 +1208,7 @@ export default function App() {
                 </h2>
                 {learningSuggestions ? (
                     <p className="text-gray-700 text-sm leading-relaxed whitespace-pre-wrap">
-                        {learningSuggestions}
+                        {renderFormattedText(learningSuggestions)}
                     </p>
                 ) : (
                     <p className="text-gray-400 italic text-sm">
