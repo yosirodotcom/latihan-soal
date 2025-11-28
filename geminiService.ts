@@ -140,9 +140,11 @@ export const generateGeminiAudio = async (text: string, key?: string): Promise<A
 }
 
 // NEW: Preload a batch of questions to background cache
-export const preloadQuizAssets = async (questions: QuestionData[]) => {
-    // 1. Preload Generic Correct Audio
-    generateGeminiAudio("Benar! Jawabanmu tepat sekali. Hebat!", "fb_correct");
+export const preloadQuizAssets = async (questions: QuestionData[], userName: string) => {
+    const safeName = userName || "Teman";
+    
+    // 1. Preload Personalized Correct Audio
+    generateGeminiAudio(`Benar, ${safeName}! Jawabanmu tepat sekali. Hebat!`, "fb_correct");
 
     // 2. Preload Questions and Wrong Feedback
     // Process sequentially to avoid rate limits, or in small batches
@@ -156,7 +158,7 @@ export const preloadQuizAssets = async (questions: QuestionData[]) => {
         // Preload Wrong Feedback (Except Essay which is dynamic)
         if (q.type !== 'essay') {
             const fbKey = `fb_wrong_${q.id}`;
-            const fbText = `Kurang tepat. Jawaban yang benar adalah ${q.correct_answer}.`;
+            const fbText = `Kurang tepat, ${safeName}. Jawaban yang benar adalah ${q.correct_answer}.`;
             if (!audioCache.has(fbKey)) {
                 generateGeminiAudio(fbText, fbKey);
             }
@@ -310,7 +312,7 @@ export const fetchImageForPrompt = async (query: string): Promise<string | null>
 };
 
 // New: Gemini function to grade essays
-export const gradeEssayWithGemini = async (userAnswer: string, correctAnswer: string): Promise<{ score: number; feedback: string }> => {
+export const gradeEssayWithGemini = async (userAnswer: string, correctAnswer: string, userName: string): Promise<{ score: number; feedback: string }> => {
   if (!process.env.API_KEY) {
     console.warn("Gemini API Key is missing.");
     return { score: 0, feedback: "API Key tidak tersedia untuk penilaian esai." };
@@ -320,17 +322,19 @@ export const gradeEssayWithGemini = async (userAnswer: string, correctAnswer: st
     const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
     const model = 'gemini-3-pro-preview'; // Use a pro model for complex reasoning
 
-    const prompt = `Nilai jawaban esai siswa berikut ini.
+    const prompt = `Nilai jawaban esai siswa bernama "${userName}" berikut ini.
     Jawaban siswa: "${userAnswer}"
     Jawaban yang benar: "${correctAnswer}"
 
     Abaikan kesalahan ejaan atau tata bahasa kecil, fokus pada esensi dan keakuratan jawaban siswa.
-    Berikan skor antara 0-100 (100 adalah sempurna, 0 adalah tidak relevan sama sekali) dan berikan umpan balik konstruktif yang singkat dalam Bahasa Indonesia.
+    Berikan skor antara 0-100 (100 adalah sempurna, 0 adalah tidak relevan sama sekali).
+    
+    Berikan umpan balik konstruktif yang singkat dalam Bahasa Indonesia.
+    PENTING: Dalam umpan balik, sapa siswa dengan nama "${userName}" untuk membuatnya personal.
     Fokus pada:
     1. Relevansi jawaban siswa dengan pertanyaan.
     2. Akurasi informasi yang diberikan.
     3. Kelengkapan jawaban dibandingkan dengan jawaban yang benar.
-    4. Bahasa dan struktur (namun tetap abaikan kesalahan kecil seperti yang diinstruksikan).
 
     Format output sebagai JSON dengan properti 'score' (number) dan 'feedback' (string).`;
 
@@ -343,7 +347,7 @@ export const gradeEssayWithGemini = async (userAnswer: string, correctAnswer: st
           type: Type.OBJECT,
           properties: {
             score: { type: Type.NUMBER, description: "Skor penilaian 0-100" },
-            feedback: { type: Type.STRING, description: "Umpan balik konstruktif" },
+            feedback: { type: Type.STRING, description: "Umpan balik konstruktif menyebut nama siswa" },
           },
           required: ["score", "feedback"],
         },
@@ -371,7 +375,7 @@ export const gradeEssayWithGemini = async (userAnswer: string, correctAnswer: st
       const isCorrectFallback = userAnswer.toLowerCase().includes(correctAnswer.toLowerCase());
       return {
         score: isCorrectFallback ? 80 : 20,
-        feedback: `(Fallback) ${isCorrectFallback ? "Jawaban Anda relevan." : "Jawaban Anda kurang relevan."} Coba periksa kembali.`
+        feedback: `(Fallback) ${isCorrectFallback ? `Jawaban Anda relevan, ${userName}.` : `Jawaban Anda kurang relevan, ${userName}.`} Coba periksa kembali.`
       };
     }
 
@@ -394,7 +398,8 @@ export const gradeEssayWithGemini = async (userAnswer: string, correctAnswer: st
 // New: Gemini function to generate learning suggestions
 export const generateLearningSuggestionsWithGemini = async (
   wrongQuestions: Array<{ question: string; subject: string; chapter: number }>,
-  level: SchoolLevel
+  level: SchoolLevel,
+  userName: string
 ): Promise<string> => {
   if (!process.env.API_KEY) {
     console.warn("Gemini API Key is missing.");
@@ -405,9 +410,9 @@ export const generateLearningSuggestionsWithGemini = async (
     const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
     const model = 'gemini-3-pro-preview'; // Use a pro model for better reasoning
 
-    let mistakeSummary = "Siswa menjawab semua soal dengan benar.";
+    let mistakeSummary = `Siswa bernama ${userName} menjawab semua soal dengan benar.`;
     if (wrongQuestions.length > 0) {
-      mistakeSummary = "Berikut adalah pertanyaan-pertanyaan yang dijawab SALAH oleh siswa:\n";
+      mistakeSummary = `Berikut adalah pertanyaan-pertanyaan yang dijawab SALAH oleh siswa bernama ${userName}:\n`;
       wrongQuestions.forEach(q => {
         mistakeSummary += `- Mata Pelajaran ${q.subject} (Bab ${q.chapter}): "${q.question}"\n`;
       });
@@ -417,16 +422,16 @@ export const generateLearningSuggestionsWithGemini = async (
     ${mistakeSummary}
 
     Tugas:
-    Identifikasi **TOPIK SPESIFIK** atau **KONSEP** yang belum dipahami siswa berdasarkan isi pertanyaan yang salah tersebut (contoh: "Konsep Hewan Vertebrata", "Penjumlahan 2 digit", "Penggunaan To Be").
+    Identifikasi **TOPIK SPESIFIK** atau **KONSEP** yang belum dipahami ${userName} berdasarkan isi pertanyaan yang salah tersebut.
     
     Berikan saran belajar yang:
     1. SANGAT SINGKAT (Maksimal 3 kalimat).
-    2. Langsung menyebutkan nama topik/materi spesifik yang perlu dipelajari ulang. JANGAN hanya menyebut "Bab 1" atau nama Mata Pelajarannya saja, tapi sebutkan konsep intinya.
-    3. Hindari kata-kata motivasi umum (seperti "belajar lebih giat", "jangan menyerah").
+    2. Langsung menyebutkan nama ${userName} dengan ramah.
+    3. Langsung menyebutkan nama topik/materi spesifik yang perlu dipelajari ulang. JANGAN hanya menyebut "Bab 1" atau nama Mata Pelajarannya saja, tapi sebutkan konsep intinya.
     4. Gunakan Bahasa Indonesia yang santai namun jelas.
 
     Contoh Output Bagus:
-    "Kamu perlu mempelajari kembali tentang **Hewan Vertebrata** dan ciri-cirinya. Selain itu, perkuat pemahamanmu tentang **perkalian dasar** agar lebih teliti."`;
+    "${userName}, sepertinya kamu perlu mempelajari kembali tentang **Hewan Vertebrata** dan ciri-cirinya. Selain itu, perkuat pemahamanmu tentang **perkalian dasar** agar lebih teliti."`;
 
     const response: GenerateContentResponse = await ai.models.generateContent({
       model: model,

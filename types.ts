@@ -48,7 +48,8 @@ export interface QuizSettings {
 }
 
 export interface QuizState {
-  status: 'setup' | 'quiz' | 'analyzing' | 'summary'; // Updated: Added 'analyzing'
+  status: 'setup' | 'name_input' | 'quiz' | 'analyzing' | 'summary'; // Updated: Added 'name_input'
+  userName: string | null; // New: Store user name
   score: number;
   totalAnswered: number;
   history: ChatMessage[];
