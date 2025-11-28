@@ -1,3 +1,4 @@
+
 import { RawDataBlock } from './data_types';
 
 // Import SD Data (Semester 1)
@@ -37,6 +38,9 @@ import { DATA_SD_3_SEM_2_PJOK } from './data_source_sd_3_sem_2_pjok';
 import { DATA_SMP_7_SEM_1_IPA } from './data_source_smp_7_sem_1_ipa';
 import { DATA_SMP_8_SEM_1_MATEMATIKA } from './data_source_smp_8_sem_1_matematika';
 import { DATA_SMP_9_SEM_1_INGGRIS } from './data_source_smp_9_sem_1_inggris';
+// NEW SMP 9 Semester 1 TIK and IPS
+import { DATA_SMP_9_SEM_1_TIK } from './data_source_smp_9_sem_1_tik';
+import { DATA_SMP_9_SEM_1_IPS } from './data_source_smp_9_sem_1_ips';
 
 // Import SMP Data (Semester 2 Examples)
 import { DATA_SMP_7_SEM_2_IPA } from './data_source_smp_7_sem_2_ipa';
@@ -86,6 +90,8 @@ export const RAW_DATA: RawDataBlock[] = [
     ...DATA_SMP_7_SEM_1_IPA,
     ...DATA_SMP_8_SEM_1_MATEMATIKA,
     ...DATA_SMP_9_SEM_1_INGGRIS,
+    ...DATA_SMP_9_SEM_1_TIK,
+    ...DATA_SMP_9_SEM_1_IPS,
     
     // SMP Sem 2
     ...DATA_SMP_7_SEM_2_IPA,

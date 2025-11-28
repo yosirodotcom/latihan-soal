@@ -6,7 +6,7 @@ import { RawQuestion } from './data_types';
 export const SMP_SUBJECTS: Record<number, string[]> = {
   7: ["PAI", "PKn", "Bahasa Indonesia", "PJOK", "Bahasa Inggris", "Matematika", "IPA", "IPS"],
   8: ["PAI", "PPKn", "Bahasa Indonesia", "Bahasa Inggris", "Matematika", "IPA", "IPS", "Seni"],
-  9: ["Matematika", "Bahasa Indonesia", "Bahasa Inggris", "Fisika", "Biologi", "Sejarah", "Geografi", "Sosiologi", "PPkn", "PAI", "PJOK"]
+  9: ["Matematika", "Bahasa Indonesia", "Bahasa Inggris", "Fisika", "Biologi", "Sejarah", "Geografi", "Sosiologi", "PPkn", "PAI", "PJOK", "TIK", "IPS"]
 };
 
 const processOptions = (rawOpts: any): Option[] => {
@@ -61,7 +61,8 @@ export const getSMPQuestions = (): QuestionData[] => {
             else if (subjectLower.includes("ipa") || subjectLower.includes("fisika") || subjectLower.includes("biologi")) keywords.push("ipa", "fisika", "biologi");
             else if (subjectLower.includes("ips") || subjectLower.includes("sejarah") || subjectLower.includes("geografi") || subjectLower.includes("sosiologi")) keywords.push("ips", "sejarah", "geografi", "sosiologi");
             else if (subjectLower.includes("pancasila") || subjectLower.includes("ppkn") || subjectLower.includes("pkn")) keywords.push("pancasila", "ppkn", "pkn");
-            else if (subjectLower === "pai" || subjectLower.includes("agama")) keywords.push("pai", "agama"); // Added "pai" keyword
+            else if (subjectLower === "pai" || subjectLower.includes("agama")) keywords.push("pai", "agama"); 
+            else if (subjectLower.includes("tik")) keywords.push("tik", "informatika");
 
             const relevantBlocks = RAW_DATA.filter(block => {
                 return block.Grade === grade && keywords.includes(block.Subject.toLowerCase());
