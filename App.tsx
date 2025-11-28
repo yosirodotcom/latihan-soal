@@ -1,8 +1,11 @@
+
 import React, { useState, useEffect, useRef } from 'react';
 import { Play, StopCircle, Clock, Send, Volume2, Image as ImageIcon, CheckCircle, XCircle, ArrowRight, ChevronDown, ChevronUp, List, BookOpen, GraduationCap, Flame, Lightbulb, Loader2, BrainCircuit, Palette, User } from 'lucide-react';
 import { QUESTIONS_DB, getSubjects, getChapters } from './data';
 import { QuizSettings, QuizState, QuestionData, ChatMessage, SchoolLevel } from './types';
 import { playGeminiTTS, fetchImageForPrompt, playNativeTTS, stopAudio, gradeEssayWithGemini, generateLearningSuggestionsWithGemini, generateGeminiAudio, playAudioBuffer, preloadQuizAssets } from './geminiService';
+
+
 
 // Sub-component for handling Async Image Fetching/Generation
 const PromptImage: React.FC<{ prompt: string }> = ({ prompt }) => {
@@ -266,39 +269,19 @@ export default function App() {
 
   // Effect to assign audio elements to refs after component mounts
   useEffect(() => {
-    // Setup Correct Answer Audio
-    const cAudio = new Audio();
-    cAudio.src = './ding.mp3'; // Try loading from local path
-    cAudio.volume = 0.5;
+    // Using more reliable public domain sounds
+    correctAudio.current = new Audio('https://wordpress-8fnnl.wasmer.app/wp-content/uploads/2025/11/ding.mp3'); 
+    wrongAudio.current = new Audio('https://wordpress-8fnnl.wasmer.app/wp-content/uploads/2025/11/wrong.mp3'); 
     
-    // Fallback if local file is missing/error
-    cAudio.onerror = () => {
-        console.warn("ding.mp3 not found, using backup URL.");
-        cAudio.src = 'https://www.soundjay.com/buttons/button-09a.mp3';
-    };
-
-    // Setup Wrong Answer Audio
-    const wAudio = new Audio();
-    wAudio.src = './wrong.mp3'; // Try loading from local path
-    wAudio.volume = 0.3;
-
-    // Fallback if local file is missing/error
-    wAudio.onerror = () => {
-        console.warn("wrong.mp3 not found, using backup URL.");
-        wAudio.src = 'https://www.soundjay.com/buttons/button-10.mp3';
-    };
-
-    // Preload
-    cAudio.preload = 'auto';
-    wAudio.preload = 'auto';
-
-    // Attempt to load to trigger error if missing immediately
-    cAudio.load();
-    wAudio.load();
-
-    // Assign to refs
-    correctAudio.current = cAudio;
-    wrongAudio.current = wAudio;
+    // Ensure volume is pleasant and NOT muted
+    if (correctAudio.current) {
+      correctAudio.current.volume = 0.5;
+      correctAudio.current.muted = false;
+    }
+    if (wrongAudio.current) {
+      wrongAudio.current.volume = 0.3; // Slightly lower for the buzzer
+      wrongAudio.current.muted = false;
+    }
   }, []);
 
   // Effect to track question start time
