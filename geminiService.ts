@@ -1,10 +1,14 @@
 import { GoogleGenAI, Modality, Type, GenerateContentResponse } from "@google/genai";
-import { SchoolLevel } from "./types";
+import { SchoolLevel, QuestionData } from "./types";
 
 // Singleton AudioContext to prevent browser limits
 let audioCtx: AudioContext | null = null;
 let currentSource: AudioBufferSourceNode | null = null;
 let currentPlaybackId = 0; // Track the latest playback request ID to prevent overlaps
+
+// Cache to store promises of AudioBuffers
+// Key: string (ID), Value: Promise<AudioBuffer | null>
+const audioCache = new Map<string, Promise<AudioBuffer | null>>();
 
 function getAudioContext(): AudioContext {
   if (!audioCtx) {
@@ -68,8 +72,8 @@ async function decodeAudioData(
 
 // --- Main Services ---
 
-// NEW: Generate TTS Audio Buffer without playing it (for pre-loading)
-export const generateGeminiAudio = async (text: string): Promise<AudioBuffer | null> => {
+// Internal function to call API
+const fetchGeminiAudio = async (text: string): Promise<AudioBuffer | null> => {
     if (!process.env.API_KEY) {
         console.warn("Gemini API Key is missing.");
         return null;
@@ -102,11 +106,6 @@ export const generateGeminiAudio = async (text: string): Promise<AudioBuffer | n
         }
 
         const ctx = getAudioContext();
-        // Ensure context is running (needed for some browsers after user gesture)
-        if (ctx.state === 'suspended') {
-             await ctx.resume();
-        }
-
         const pcmBytes = decodeBase64(base64Audio);
         
         return await decodeAudioData(
@@ -118,6 +117,53 @@ export const generateGeminiAudio = async (text: string): Promise<AudioBuffer | n
     } catch (error) {
         console.error("Gemini TTS Generation Error:", error);
         return null;
+    }
+}
+
+// Generate TTS Audio Buffer. 
+// If key is provided, it checks/updates the cache.
+export const generateGeminiAudio = async (text: string, key?: string): Promise<AudioBuffer | null> => {
+    // If key provided and exists in cache, return the promise (await it)
+    if (key && audioCache.has(key)) {
+        return audioCache.get(key)!;
+    }
+
+    // Create the generation promise
+    const audioPromise = fetchGeminiAudio(text);
+
+    // If key provided, cache the promise
+    if (key) {
+        audioCache.set(key, audioPromise);
+    }
+
+    return audioPromise;
+}
+
+// NEW: Preload a batch of questions to background cache
+export const preloadQuizAssets = async (questions: QuestionData[]) => {
+    // 1. Preload Generic Correct Audio
+    generateGeminiAudio("Benar! Jawabanmu tepat sekali. Hebat!", "fb_correct");
+
+    // 2. Preload Questions and Wrong Feedback
+    // Process sequentially to avoid rate limits, or in small batches
+    for (const q of questions) {
+        // Preload Question Text
+        const qKey = `q_${q.id}`;
+        if (!audioCache.has(qKey)) {
+            generateGeminiAudio(q.question, qKey);
+        }
+
+        // Preload Wrong Feedback (Except Essay which is dynamic)
+        if (q.type !== 'essay') {
+            const fbKey = `fb_wrong_${q.id}`;
+            const fbText = `Kurang tepat. Jawaban yang benar adalah ${q.correct_answer}.`;
+            if (!audioCache.has(fbKey)) {
+                generateGeminiAudio(fbText, fbKey);
+            }
+        }
+
+        // Small delay to be gentle on the API
+        await new Promise(r => setTimeout(r, 200)); 
     }
 }
 
@@ -156,12 +202,13 @@ export const playAudioBuffer = async (audioBuffer: AudioBuffer): Promise<boolean
 
 
 // Returns a Promise that resolves when audio FINISHES playing or is cancelled
-export const playGeminiTTS = async (text: string): Promise<boolean> => {
+// Now supports an optional cacheKey to play pre-loaded audio
+export const playGeminiTTS = async (text: string, cacheKey?: string): Promise<boolean> => {
   stopAudio(); 
   const myPlaybackId = currentPlaybackId;
 
-  // Re-use the generation logic
-  const audioBuffer = await generateGeminiAudio(text);
+  // Use the cached promise if available, otherwise generate new
+  const audioBuffer = await generateGeminiAudio(text, cacheKey);
 
   // Check cancellation
   if (myPlaybackId !== currentPlaybackId) return true;

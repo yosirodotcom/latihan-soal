@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { Play, StopCircle, Clock, Send, Volume2, Image as ImageIcon, CheckCircle, XCircle, ArrowRight, ChevronDown, ChevronUp, List, BookOpen, GraduationCap, Flame, Lightbulb, Loader2, BrainCircuit, Palette } from 'lucide-react';
 import { QUESTIONS_DB, getSubjects, getChapters } from './data';
 import { QuizSettings, QuizState, QuestionData, ChatMessage, SchoolLevel } from './types';
-import { playGeminiTTS, fetchImageForPrompt, playNativeTTS, stopAudio, gradeEssayWithGemini, generateLearningSuggestionsWithGemini, generateGeminiAudio, playAudioBuffer } from './geminiService';
+import { playGeminiTTS, fetchImageForPrompt, playNativeTTS, stopAudio, gradeEssayWithGemini, generateLearningSuggestionsWithGemini, generateGeminiAudio, playAudioBuffer, preloadQuizAssets } from './geminiService';
 
 // Sub-component for handling Async Image Fetching/Generation
 const PromptImage: React.FC<{ prompt: string }> = ({ prompt }) => {
@@ -292,9 +292,23 @@ export default function App() {
     const lastMsg = gameState.history[gameState.history.length - 1];
     // Fix: Access animationFeedback property correctly
     if (lastMsg && lastMsg.sender === 'teacher' && lastMsg.isQuestion && !gameState.isWaitingForNext && gameState.animationFeedback === null) {
-      handlePlayAudio(lastMsg.text);
+      // Logic for pre-loaded keys
+      const currentQ = gameState.currentQuestion;
+      let audioKey: string | undefined = undefined;
+      
+      // If the message is the current question text, use the pre-loaded key
+      if (currentQ && lastMsg.text.includes(currentQ.question)) {
+          audioKey = `q_${currentQ.id}`;
+      } else if (lastMsg.id === 'intro') {
+          audioKey = 'msg_intro'; // Although we don't strictly preload intro yet, we could.
+          // For now, let intro be generated on the fly as it's the first interaction,
+          // or rely on text match if we added a specific preloader for intro.
+          // Since we didn't add intro preloader in geminiService, this will fallback to generate.
+      }
+
+      handlePlayAudio(lastMsg.text, audioKey);
     }
-  }, [gameState.history.length, gameState.isWaitingForNext, gameState.animationFeedback]);
+  }, [gameState.history.length, gameState.isWaitingForNext, gameState.animationFeedback, gameState.currentQuestion]);
 
   // Reset Dependent Settings when Level Changes
   useEffect(() => {
@@ -333,8 +347,8 @@ export default function App() {
     setSettings(prev => ({ ...prev, questionCount: Math.min(prev.questionCount || 5, Math.max(1, total)) }));
   }, [settings.subjects, settings.semester, settings.chapters, settings.questionTypes, settings.level, settings.grade]);
 
-  const handlePlayAudio = async (text: string) => {
-    const result = await playGeminiTTS(text);
+  const handlePlayAudio = async (text: string, cacheKey?: string) => {
+    const result = await playGeminiTTS(text, cacheKey);
     if (result === false) {
       await playNativeTTS(text);
     }
@@ -389,7 +403,8 @@ export default function App() {
       q.grade === settings.grade &&
       settings.subjects.includes(q.subject) &&
       q.semester === settings.semester &&
-      settings.chapters.includes(q.chapter)
+      settings.chapters.includes(q.chapter) &&
+      settings.questionTypes.includes(q.type)
     ).length;
     
     return count > 0 ? count : 10;
@@ -403,7 +418,8 @@ export default function App() {
       q.grade === settings.grade &&
       settings.subjects.includes(q.subject) &&
       q.semester === settings.semester &&
-      settings.chapters.includes(q.chapter)
+      settings.chapters.includes(q.chapter) &&
+      settings.questionTypes.includes(q.type)
     );
 
     filtered = filtered.sort(() => 0.5 - Math.random()).slice(0, settings.questionCount);
@@ -424,13 +440,21 @@ export default function App() {
           };
           filtered = [dummyQ];
       } else {
-          alert("Silakan pilih mata pelajaran terlebih dahulu.");
+          alert("Silakan pilih mata pelajaran dan jenis soal terlebih dahulu.");
           return;
       }
     }
 
     const firstQ = filtered[0];
     const initialQueue = filtered.slice(1);
+    
+    // Trigger background preloading for the whole quiz queue
+    preloadQuizAssets(filtered);
+
+    // Pre-load the first question specifically (in case preloader is slightly behind)
+    generateGeminiAudio(firstQ.question, `q_${firstQ.id}`);
+
+    const introText = `Halo! Mari kita mulai belajar ${settings.subjects.join(', ')} Kelas ${settings.grade}. Semangat! 🚀\n\n${firstQ.question}`;
 
     setGameState({
       status: 'quiz',
@@ -440,7 +464,7 @@ export default function App() {
       history: [{
         id: 'intro',
         sender: 'teacher',
-        text: `Halo! Mari kita mulai belajar ${settings.subjects.join(', ')} Kelas ${settings.grade}. Semangat! 🚀\n\n${firstQ.question}`,
+        text: introText,
         imagePrompts: firstQ.image_prompt ? [firstQ.image_prompt] : [],
         isQuestion: true
       }] as ChatMessage[],
@@ -461,6 +485,10 @@ export default function App() {
       confettiKey: 0, // New: Reset confetti key for a new quiz
     });
     setLearningSuggestions(null); // New: Clear previous suggestions
+    
+    // Play the question audio immediately. We play just the question part if possible, 
+    // or let the auto-play effect handle the full intro text.
+    // The auto-play effect will see the new history and trigger `handlePlayAudio`.
   };
 
   // --- Logic: Answering ---
@@ -508,6 +536,10 @@ export default function App() {
     // This part runs without delay for correctness/feedback logic
     let isCorrect = false;
     let aiFeedback = "";
+    
+    // For audio caching logic
+    let audioCacheKey: string | undefined = undefined;
+    let audioSpeechText = "";
 
     // 3. Determine correctness and AI feedback (async for essay, sync for others)
     if (currentQ.type === 'essay' && !timeUp && answer) {
@@ -515,18 +547,32 @@ export default function App() {
             const grade = await gradeEssayWithGemini(userAns, correctAns);
             isCorrect = grade.score >= 50;
             aiFeedback = `${grade.score >= 50 ? '👍' : '🤔'} (Skor: ${grade.score})\n${grade.feedback}`;
+            // Essay feedback is dynamic, so no cache key
+            audioSpeechText = aiFeedback;
         } catch (e) {
             console.error("Error grading essay with Gemini:", e);
             isCorrect = userAns.toLowerCase().includes(correctAns.toLowerCase());
             aiFeedback = `Gagal menilai dengan AI. Jawaban yang benar adalah: ${correctAns}.`;
+            audioSpeechText = aiFeedback;
         }
     } else if (timeUp) {
         aiFeedback = `Waktu habis! Jawaban yang benar adalah: ${correctAns}.`;
+        audioSpeechText = aiFeedback;
     } else { // For multiple_choice/true_false
         isCorrect = userAns.toLowerCase() === correctAns.toLowerCase();
-        aiFeedback = isCorrect 
-            ? "Benar! 🎉 Hebat sekali!" 
-            : `Kurang tepat. Jawaban yang benar adalah: ${correctAns}. 😔`;
+        
+        if (isCorrect) {
+            aiFeedback = "Benar! 🎉 Hebat sekali!";
+            // Use the generic correct audio
+            audioCacheKey = "fb_correct";
+            audioSpeechText = "Benar! Jawabanmu tepat sekali. Hebat!"; 
+        } else {
+            // Standard wrong feedback
+            aiFeedback = `Kurang tepat. Jawaban yang benar adalah: ${correctAns}. 😔`;
+            // Use the specific wrong feedback pre-loaded for this question
+            audioCacheKey = `fb_wrong_${currentQ.id}`;
+            audioSpeechText = `Kurang tepat. Jawaban yang benar adalah ${correctAns}.`;
+        }
     }
 
     // 4. Trigger animations/sounds and update temporary state for animation feedback
@@ -559,6 +605,8 @@ export default function App() {
         let finalFeedbackText = aiFeedback;
 
         // Adjust feedback message based on streak, using futureCurrentStreak for message content
+        // Note: For audio consistency speed, we still prioritize the cached audio key 
+        // even if the visual text is slightly more elaborate about streaks.
         if (isCorrect && futureCurrentStreak >= 3) {
             finalFeedbackText = `Luar biasa! 🔥 Streakmu ${futureCurrentStreak}! ${aiFeedback.replace('Benar! 🎉 Hebat sekali!', '')}`;
         } else if (!isCorrect && gameState.currentStreak > 0) {
@@ -600,7 +648,11 @@ export default function App() {
             };
         });
         setIsProcessing(false); // Crucial to release input after everything
-        await handlePlayAudio(finalFeedbackText); 
+        
+        // Play Audio Feedback
+        // If we have a cache key, use it (ignoring the dynamic timeString/streak text for audio speed)
+        // If no cache key (Essay), speak the constructed text (minus timeString usually, but here we speak what we have)
+        await handlePlayAudio(audioSpeechText || finalFeedbackText, audioCacheKey); 
     }, 2000); // The 2-second animation/feedback display delay
   };
 
@@ -708,6 +760,12 @@ export default function App() {
            text: "Sesi latihan selesai! Mari kita lihat nilaimu."
         } as ChatMessage);
       } else {
+        // Prepare assets for loop questions if they pop up unexpectedly
+        if (nextQuestion && !newQueue.includes(nextQuestion)) {
+            // It's a loop question, trigger preload for it specifically
+            preloadQuizAssets([nextQuestion]);
+        }
+
         // Fix: Explicitly assert the type of the message object to ChatMessage
         newHistory.push({
           id: nextQuestion.id + '_' + Date.now(),
@@ -941,6 +999,40 @@ export default function App() {
         <div className="bg-gray-50 p-4 rounded-2xl border border-gray-100 mt-auto">
              <label className="block text-xs font-bold text-gray-500 mb-4 uppercase tracking-wide">Pengaturan Tambahan</label>
              
+             {/* Question Types */}
+             <div className="mb-4">
+                <label className={`block text-xs font-bold ${theme.textDark} mb-2 flex items-center gap-1`}>
+                    <List size={14}/> Jenis Soal
+                </label>
+                <div className="flex flex-wrap gap-2">
+                    {[
+                        { id: 'multiple_choice', label: 'Pilihan Ganda' },
+                        { id: 'true_false', label: 'Benar/Salah' },
+                        { id: 'essay', label: 'Esai' }
+                    ].map(type => (
+                        <button
+                            key={type.id}
+                            onClick={() => setSettings(s => {
+                                const current = s.questionTypes;
+                                const newTypes = current.includes(type.id as any)
+                                    ? current.filter(t => t !== type.id)
+                                    : [...current, type.id as any];
+                                // Prevent deselecting all
+                                if (newTypes.length === 0) return s;
+                                return { ...s, questionTypes: newTypes };
+                            })}
+                            className={`px-3 py-2 rounded-lg text-xs font-bold border-2 transition-all flex items-center gap-1
+                                ${settings.questionTypes.includes(type.id as any) 
+                                    ? `${theme.primary} text-white border-transparent` 
+                                    : 'bg-white text-gray-500 border-gray-200'}`}
+                        >
+                            {settings.questionTypes.includes(type.id as any) && <CheckCircle size={12} />}
+                            {type.label}
+                        </button>
+                    ))}
+                </div>
+             </div>
+
              {/* Timer Toggle */}
              <div className="flex items-center justify-between mb-4">
                 <div className="flex items-center gap-2 text-gray-600">
