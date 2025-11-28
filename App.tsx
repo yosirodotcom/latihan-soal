@@ -236,7 +236,7 @@ export default function App() {
     history: [],
     queue: [],
     currentQuestion: null,
-    loopState: { active: false, streak: 0, parentId: null },
+    remediationState: {}, // New tracking for false answer logic
     currentStreak: 0, // Reset general streak
     timeLeft: 0,
     isWaitingForNext: false,
@@ -310,6 +310,7 @@ export default function App() {
       let audioKey: string | undefined = undefined;
       
       // If the message is the current question text, use the pre-loaded key
+      // Strip dynamic remediation text if present to match preload key
       if (currentQ && lastMsg.text.includes(currentQ.question)) {
           audioKey = `q_${currentQ.id}`;
       } else if (lastMsg.id === 'intro') {
@@ -490,7 +491,7 @@ export default function App() {
       }] as ChatMessage[],
       queue: initialQueue,
       currentQuestion: firstQ,
-      loopState: { active: false, streak: 0, parentId: null },
+      remediationState: {}, // Initialize empty remediation map
       currentStreak: 0, 
       timeLeft: settings.timerEnabled ? (firstQ.type === 'essay' ? 120 : 60) : 0, 
       isWaitingForNext: false,
@@ -504,6 +505,30 @@ export default function App() {
       confettiKey: 0, 
     });
     setLearningSuggestions(null); 
+  };
+
+  // Helper to extract the base ID from a proxy or retry ID
+  const getBaseId = (id: string): string => {
+    // Splits by _proxy or _retry and takes the first part
+    return id.replace(/(_proxy.*|_retry.*)/, '');
+  };
+
+  // Helper to insert a question into the queue at a random position (3 to 10 steps ahead)
+  const insertAtRandomPosition = (queue: QuestionData[], question: QuestionData) => {
+    const minDistance = 2; // Index 2 means 3rd position (0, 1, 2)
+    const maxDistance = 9; // Index 9 means 10th position
+    
+    // If queue is short, insert at end or random available position
+    if (queue.length <= minDistance) {
+        const randomIndex = Math.floor(Math.random() * (queue.length + 1));
+        queue.splice(randomIndex, 0, question);
+    } else {
+        const actualMax = Math.min(queue.length, maxDistance);
+        const range = actualMax - minDistance + 1;
+        const randomIndex = Math.floor(Math.random() * range) + minDistance;
+        queue.splice(randomIndex, 0, question);
+    }
+    return queue;
   };
 
   // --- Logic: Answering ---
@@ -593,20 +618,30 @@ export default function App() {
     }
 
     // 4. Trigger animations/sounds and update temporary state for animation feedback
-    setGameState(prev => ({
-        ...prev,
-        animatingOptionValue: userAns, 
-        animationFeedback: isCorrect ? 'correct' : 'wrong',
-        correctAnswerOptionValue: isCorrect ? null : correctAns,
-        showConfetti: isCorrect,
-        confettiKey: isCorrect ? prev.confettiKey + 1 : prev.confettiKey,
-        questionAttempts: [...prev.questionAttempts, { 
-          questionId: currentQ.id, 
-          isCorrect: isCorrect,
-          subject: currentQ.subject,
-          chapter: currentQ.chapter,
-        }],
-    }));
+    setGameState(prev => {
+        // Point 7: Only count as "Wrong" if it's the first time this Question ID (base ID) is encountered.
+        // Or strictly speaking, if it's a "fresh" question. But tracking all attempts is useful for stats.
+        // We will filter distinct questions later in summary.
+        
+        const baseId = getBaseId(currentQ.id);
+        // Check if this base ID has been attempted before
+        const isFirstAttempt = !prev.questionAttempts.some(qa => getBaseId(qa.questionId) === baseId);
+
+        return {
+          ...prev,
+          animatingOptionValue: userAns, 
+          animationFeedback: isCorrect ? 'correct' : 'wrong',
+          correctAnswerOptionValue: isCorrect ? null : correctAns,
+          showConfetti: isCorrect,
+          confettiKey: isCorrect ? prev.confettiKey + 1 : prev.confettiKey,
+          questionAttempts: [...prev.questionAttempts, { 
+            questionId: currentQ.id, 
+            isCorrect: isCorrect,
+            subject: currentQ.subject,
+            chapter: currentQ.chapter,
+          }],
+        }
+    });
 
     if (isCorrect) {
         correctAudio.current?.play().catch(e => console.log("Audio play failed", e));
@@ -621,13 +656,9 @@ export default function App() {
 
         let finalFeedbackText = aiFeedback;
 
-        // Adjust feedback message based on streak, using futureCurrentStreak for message content
-        // Note: For audio consistency speed, we still prioritize the cached audio key 
-        // even if the visual text is slightly more elaborate about streaks.
         if (isCorrect && futureCurrentStreak >= 3) {
             finalFeedbackText = `Luar biasa, ${name}! 🔥 Streakmu ${futureCurrentStreak}! ${aiFeedback.replace(`Benar, ${name}! 🎉 Hebat sekali!`, '')}`;
         } else if (!isCorrect && gameState.currentStreak > 0) {
-            // If wrong, and there _was_ a streak, report the *old* streak before it reset
             finalFeedbackText = `Ups, streakmu terhenti di ${gameState.currentStreak}. Jangan menyerah ${name}! ${aiFeedback}`;
         }
 
@@ -648,7 +679,6 @@ export default function App() {
                     msg.id === thinkingMsgId ? finalTeacherMsg : msg
                 );
             } else {
-                // For non-essay questions where no thinking message was added, just append the feedback
                 updatedHistory.push(finalTeacherMsg);
             }
 
@@ -657,25 +687,20 @@ export default function App() {
                 history: updatedHistory,
                 isWaitingForNext: true,
                 lastAnswerCorrect: isCorrect,
-                currentStreak: futureCurrentStreak, // Set the new streak value in state
+                currentStreak: futureCurrentStreak, 
                 animatingOptionValue: null,
                 animationFeedback: null,
                 correctAnswerOptionValue: null,
                 showConfetti: false,
             };
         });
-        setIsProcessing(false); // Crucial to release input after everything
+        setIsProcessing(false); 
         
-        // Play Audio Feedback
-        // If we have a cache key, use it (ignoring the dynamic timeString/streak text for audio speed)
-        // If no cache key (Essay), speak the constructed text (minus timeString usually, but here we speak what we have)
         await handlePlayAudio(audioSpeechText || finalFeedbackText, audioCacheKey); 
-    }, 2000); // The 2-second animation/feedback display delay
+    }, 2000); 
   };
 
-  // `handleTurn` is removed as its logic is now incorporated into `handleAnswerSubmit`'s setTimeout.
-
-  // --- Core Logic: Navigation & Looping ---
+  // --- Core Logic: Navigation & Remediation Loop ---
   const handleNextQuestion = () => {
     stopAudio();
     setGameState(prev => {
@@ -684,116 +709,128 @@ export default function App() {
       const name = prev.userName || "Teman";
       if (!question) return prev;
 
+      // Calculate score and total - ONLY if it's the FIRST attempt of a main question
+      // This prevents inflating score with remediation questions
+      const baseId = getBaseId(question.id);
+      
+      // Determine if this exact question instance was a "fresh" attempt (not a proxy or retry in the queue)
+      // We look at the ID suffix to guess. 
+      // Original IDs: "SD_1_MAT_1_1"
+      // Proxy IDs: "..._proxy..."
+      // Retry IDs: "..._retry..."
+      
+      const isProxy = question.id.includes('_proxy');
+      const isRetry = question.id.includes('_retry');
+      const isFresh = !isProxy && !isRetry;
+
       let newScore = prev.score;
-      let newHistory: ChatMessage[] = [...prev.history];
-      let newQueue = [...prev.queue];
-      let newLoopState = { ...prev.loopState };
-      let nextQuestion: QuestionData | null = null;
-      let nextTime = 0;
       let newTotalAnswered = prev.totalAnswered;
 
-      // Logic: Wrong Answer Loop
-      // Goal: Answer BOTH Main and Proxy correctly in SUCCESSION (Streak = 2).
-      // If wrong, reset streak to 0 and switch to the other question.
-
-      const isProxy = question.id.endsWith('_proxy');
-      
-      const getOriginalMain = (id: string): QuestionData | undefined => {
-         return QUESTIONS_DB.find(q => q.id === id.replace('_proxy', '')); // Find original by removing suffix
-      };
-
-      if (prev.loopState.active && prev.loopState.parentId) {
-        // --- INSIDE LOOP ---
-        const mainQ = getOriginalMain(prev.loopState.parentId) || question; // Fallback
-        const proxyQ = mainQ.proxy ? { ...mainQ.proxy, id: mainQ.id + '_proxy', proxy: undefined } : null;
-
-        if (isCorrect) {
-          const newStreak = prev.loopState.streak + 1;
-          
-          if (newStreak >= 2) {
-             // SUCCESS: Streak 2. Exit Loop.
-             newLoopState = { active: false, streak: 0, parentId: null };
-             nextQuestion = newQueue.shift() || null;
-             // Don't increment score for remediation? Or maybe yes? Usually no for repeated attempts.
-             // We'll leave score as is.
-          } else {
-             // Streak 1. Must switch to the OTHER one.
-             newLoopState = { ...prev.loopState, streak: newStreak };
-             if (isProxy) {
-                 // Proxy Correct -> Next is Main
-                 nextQuestion = mainQ;
-             } else {
-                 // Main Correct -> Next is Proxy
-                 nextQuestion = proxyQ;
-             }
-          }
-        } else {
-          // WRONG in Loop
-          // Reset Streak. Switch to the other one.
-          newLoopState = { ...prev.loopState, streak: 0 };
-          if (isProxy) {
-              // Proxy Wrong -> Next is Main
-              nextQuestion = mainQ;
-          } else {
-              // Main Wrong -> Next is Proxy
-              nextQuestion = proxyQ;
-          }
-        }
-
-        // Safety fallback if proxy missing
-        if (!nextQuestion) {
-            newLoopState = { active: false, streak: 0, parentId: null };
-            nextQuestion = newQueue.shift() || null;
-        }
-
-      } else {
-        // --- NORMAL MODE ---
-        if (isCorrect) {
-          newScore += 1;
-          nextQuestion = newQueue.shift() || null;
+      if (isFresh) {
+          // Point 7: Only count stats for the first answer (even if wrong)
           newTotalAnswered += 1;
-        } else {
-          // Wrong Answer -> Enter Loop
-          // Check if proxy exists
-          if (question.proxy) {
-             newLoopState = { active: true, streak: 0, parentId: question.id };
-             // First step of loop: Ask Proxy (randomly? Prompt says "proxy question again at random...").
-             // Let's just always start with Proxy to help them learn.
-             nextQuestion = { ...question.proxy, id: question.id + '_proxy', proxy: undefined };
-          } else {
-             // No proxy available, just move on
-             nextQuestion = newQueue.shift() || null;
-          }
-          newTotalAnswered += 1; // Count the first attempt
-        }
+          if (isCorrect) newScore += 1;
       }
 
+      let newHistory: ChatMessage[] = [...prev.history];
+      let newQueue = [...prev.queue];
+      let newRemediationState = { ...prev.remediationState };
+      
+      // --- Remediation Logic (The 7 Points) ---
+      
+      const originalQ = QUESTIONS_DB.find(q => q.id === baseId) || question;
+      const proxyQ = originalQ.proxy ? { ...originalQ.proxy, id: baseId + '_proxy_' + Date.now(), proxy: undefined } : null;
+      const retryQ = { ...originalQ, id: baseId + '_retry_' + Date.now(), proxy: undefined };
+
+      // Point 1: If user answers wrong (Main/Fresh), ask Proxy randomly later.
+      if (isFresh && !isCorrect) {
+          if (proxyQ) {
+              newQueue = insertAtRandomPosition(newQueue, proxyQ);
+              newRemediationState[baseId] = { step: 'waiting_for_proxy', proxyPassed: false };
+          }
+          // If no proxy exists, maybe just retry main? Following prompt strictly: "Proxynya".
+          // If no proxy, we might fall back to retry main directly or just skip. Let's insert Main retry if no proxy.
+          else {
+              newQueue = insertAtRandomPosition(newQueue, retryQ);
+              newRemediationState[baseId] = { step: 'waiting_for_main_retry', proxyPassed: false }; // Dummy state
+          }
+      }
+
+      // Point 2: If user answers wrong (Proxy), ask Main again randomly later.
+      if (isProxy && !isCorrect) {
+          // Flag that proxy failed
+          newRemediationState[baseId] = { step: 'waiting_for_main_retry', proxyPassed: false };
+          newQueue = insertAtRandomPosition(newQueue, retryQ);
+      }
+
+      // Point 3: If user answers wrong (Main Retry) -> Go back to Point 1 (Ask Proxy)
+      if (isRetry && !isCorrect) {
+          if (proxyQ) {
+              newQueue = insertAtRandomPosition(newQueue, proxyQ);
+              newRemediationState[baseId] = { step: 'waiting_for_proxy', proxyPassed: false };
+          } else {
+              // Fallback loop if no proxy
+              newQueue = insertAtRandomPosition(newQueue, retryQ);
+          }
+      }
+
+      // Point 4: If user answers Correct (Main Retry) ... BUT failed proxy?
+      // "Jika user menjawab benar pertanyaan utama, maka kembali ke poin satu" 
+      // This implies if they didn't pass the full sequence (Proxy->Main), the loop isn't done.
+      // But if they passed Proxy then passed Main (Point 6), it's done.
+      if (isRetry && isCorrect) {
+          const status = newRemediationState[baseId];
+          if (status && status.proxyPassed) {
+              // Point 6: Consecutive correct (Proxy then Main) -> Done.
+              // Remove from remediation tracking
+              delete newRemediationState[baseId]; 
+          } else {
+              // Point 4: Got Main right, but Proxy was failed/skipped -> Loop continues (Back to Proxy)
+              if (proxyQ) {
+                  newQueue = insertAtRandomPosition(newQueue, proxyQ);
+                  newRemediationState[baseId] = { step: 'waiting_for_proxy', proxyPassed: false };
+              } else {
+                  // If no proxy exists, getting Main right should effectively end the loop
+                  delete newRemediationState[baseId]; 
+              }
+          }
+      }
+
+      // Point 5: If user answers Correct (Proxy) -> Ask Main randomly.
+      if (isProxy && isCorrect) {
+          newRemediationState[baseId] = { step: 'waiting_for_main_retry', proxyPassed: true };
+          newQueue = insertAtRandomPosition(newQueue, retryQ);
+      }
+
+      // Point 6 is handled in Point 4's logic (Success condition).
+
+      
+      // --- Proceed to Next ---
+      const nextQuestion = newQueue.shift() || null;
+      let nextTime = 0;
       let status: QuizState['status'] = prev.status;
+
       if (!nextQuestion) {
-        status = 'analyzing'; // Changed from 'summary' to 'analyzing'
-        // Fix: Explicitly assert the type of the message object to ChatMessage
+        status = 'analyzing'; 
         newHistory.push({
            id: 'end',
            sender: 'teacher',
            text: `Sesi latihan selesai! Mari kita lihat nilaimu, ${name}.`
         } as ChatMessage);
       } else {
-        // Prepare assets for loop questions if they pop up unexpectedly
-        if (nextQuestion && !newQueue.includes(nextQuestion)) {
-            // It's a loop question, trigger preload for it specifically
-            preloadQuizAssets([nextQuestion], name);
-        }
+        // Preload assets for the specific next question if distinct
+        preloadQuizAssets([nextQuestion], name);
 
-        // Fix: Explicitly assert the type of the message object to ChatMessage
         newHistory.push({
-          id: nextQuestion.id + '_' + Date.now(),
+          id: nextQuestion.id, // Use unique ID from queue (includes suffixes)
           sender: 'teacher',
           text: nextQuestion.question,
           imagePrompts: nextQuestion.image_prompt ? [nextQuestion.image_prompt] : [],
           isQuestion: true
         } as ChatMessage);
-        if (settings.timerEnabled && nextQuestion) { // Check if nextQuestion exists
-            nextTime = nextQuestion.type === 'essay' ? 120 : 60; // Set time based on next question type
+        
+        if (settings.timerEnabled && nextQuestion) { 
+            nextTime = nextQuestion.type === 'essay' ? 120 : 60; 
         }
       }
 
@@ -802,19 +839,17 @@ export default function App() {
         score: newScore,
         history: newHistory,
         queue: newQueue,
-        loopState: newLoopState,
+        remediationState: newRemediationState,
         currentQuestion: nextQuestion,
         status: status,
         timeLeft: nextTime,
         totalAnswered: newTotalAnswered,
         isWaitingForNext: false,
         lastAnswerCorrect: null,
-        showConfetti: false, // Ensure confetti is off for next question
-        // Fix: Reset new animation-related state properties
+        showConfetti: false,
         animatingOptionValue: null,
         animationFeedback: null,
         correctAnswerOptionValue: null,
-        // elapsedTime is kept running by its own useEffect, no reset here
       };
     });
   };
@@ -834,7 +869,7 @@ export default function App() {
       history: [],
       queue: [],
       currentQuestion: null,
-      loopState: { active: false, streak: 0, parentId: null },
+      remediationState: {}, // Reset complex remediation state
       currentStreak: 0, // Reset general streak
       timeLeft: 0,
       isWaitingForNext: false,
@@ -856,11 +891,22 @@ export default function App() {
   useEffect(() => {
     if (gameState.status === 'analyzing' && learningSuggestions === null) {
       const processResults = async () => {
-        // 1. Gather wrong questions with text instead of just aggregated counts
-        const wrongQuestions = gameState.questionAttempts
+        // 1. Gather wrong questions - Filter for FIRST ATTEMPTS of base IDs only
+        // We only want to summarize based on the initial performance, not the remedial loops
+        const uniqueAttempts = new Map();
+        
+        gameState.questionAttempts.forEach(attempt => {
+            const baseId = getBaseId(attempt.questionId);
+            // Only store the first attempt for each base ID
+            if (!uniqueAttempts.has(baseId)) {
+                uniqueAttempts.set(baseId, attempt);
+            }
+        });
+
+        const wrongQuestions = Array.from(uniqueAttempts.values())
             .filter(attempt => !attempt.isCorrect)
             .map(attempt => {
-                const qData = QUESTIONS_DB.find(q => q.id === attempt.questionId);
+                const qData = QUESTIONS_DB.find(q => q.id === getBaseId(attempt.questionId));
                 return {
                     question: qData?.question || "Pertanyaan tidak diketahui",
                     subject: attempt.subject,
@@ -1185,9 +1231,11 @@ export default function App() {
     // Note: totalAnswered increments on the *next* question, so for current display,
     // if currentQuestion exists, it's one more question than totalAnswered.
     // If we're at the summary, currentQuestion is null, so it's just totalAnswered.
-    const questionsLeft = settings.questionCount - (gameState.totalAnswered + (gameState.currentQuestion ? 1 : 0)) + (gameState.loopState.active ? 1 : 0);
-    // Ensure questionsLeft doesn't go below 0
-    const displayQuestionsLeft = Math.max(0, questionsLeft);
+    // Loop questions (Proxy/Retry) are extra steps, so don't count towards the original total.
+    // To make this accurate, we need to count how many *fresh* questions are remaining in the queue.
+    
+    // Simple calc: Total planned - Currently Answered Fresh
+    const displayQuestionsLeft = Math.max(0, settings.questionCount - gameState.totalAnswered);
 
     return (
       <div className={`flex flex-col h-screen bg-slate-50 ${fontSizeClass}`}>
@@ -1196,7 +1244,7 @@ export default function App() {
           <div className="flex items-center gap-3">
             {/* Current Question Number */}
             <div className={`w-10 h-10 ${theme.secondary} rounded-full flex items-center justify-center ${theme.text} font-bold border ${theme.border} shadow-sm`}>
-               {gameState.totalAnswered + (gameState.currentQuestion ? 1 : 0)}
+               {Math.min(gameState.totalAnswered + 1, settings.questionCount)}
             </div>
 
             {/* Questions Left */}

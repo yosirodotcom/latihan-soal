@@ -47,29 +47,33 @@ export interface QuizSettings {
   themeColor: string; // New: Selected theme color key
 }
 
+// New: Track the status of a specific question's remediation loop
+export interface RemediationStatus {
+  step: 'waiting_for_proxy' | 'waiting_for_main_retry';
+  proxyPassed: boolean; // Tracks if the user got the proxy right in this cycle
+}
+
 export interface QuizState {
-  status: 'setup' | 'name_input' | 'quiz' | 'analyzing' | 'summary'; // Updated: Added 'name_input'
-  userName: string | null; // New: Store user name
+  status: 'setup' | 'name_input' | 'quiz' | 'analyzing' | 'summary';
+  userName: string | null;
   score: number;
   totalAnswered: number;
   history: ChatMessage[];
   queue: QuestionData[];
   currentQuestion: QuestionData | null;
-  loopState: {
-    active: boolean;
-    streak: number; // This streak is for the remediation loop
-    parentId: string | null;
-  };
-  currentStreak: number; // New: General gamification streak
+  
+  // Updated: Complex remediation tracking instead of simple loopState
+  remediationState: Record<string, RemediationStatus>; 
+  
+  currentStreak: number;
   timeLeft: number;
   isWaitingForNext: boolean;
   lastAnswerCorrect: boolean | null;
-  showConfetti: boolean; // New: Controls confetti animation
-  // Fix: Add animation-related properties to QuizState
-  animatingOptionValue: string | null; // Stores the value of the option being animated
-  animationFeedback: 'correct' | 'wrong' | null; // Stores the feedback type for animation
-  correctAnswerOptionValue: string | null; // Stores the correct answer text for highlighting
-  elapsedTime: number; // New: Total time spent on the quiz
-  questionAttempts: { questionId: string; isCorrect: boolean; subject: string; chapter: number; }[]; // New: Track individual question outcomes
-  confettiKey: number; // New: Key to force remounting ConfettiPop
+  showConfetti: boolean;
+  animatingOptionValue: string | null;
+  animationFeedback: 'correct' | 'wrong' | null;
+  correctAnswerOptionValue: string | null;
+  elapsedTime: number;
+  questionAttempts: { questionId: string; isCorrect: boolean; subject: string; chapter: number; }[];
+  confettiKey: number;
 }
