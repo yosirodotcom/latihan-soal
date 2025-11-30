@@ -72,52 +72,74 @@ async function decodeAudioData(
 
 // --- Main Services ---
 
-// Internal function to call API
+// Internal function to call API with Retry Logic
 const fetchGeminiAudio = async (text: string): Promise<AudioBuffer | null> => {
     if (!process.env.API_KEY) {
         console.warn("Gemini API Key is missing.");
         return null;
     }
 
-    try {
-        const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
-        const modelId = "gemini-2.5-flash-preview-tts";
+    if (!text || !text.trim()) return null;
 
-        const response = await ai.models.generateContent({
-            model: modelId,
-            contents: [{
-                parts: [{ text: text }],
-            }],
-            config: {
-                responseModalities: [Modality.AUDIO],
-                speechConfig: {
-                    voiceConfig: {
-                        prebuiltVoiceConfig: { voiceName: 'Kore' },
+    const maxRetries = 3;
+    const modelId = "gemini-2.5-flash-preview-tts";
+    const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+
+    for (let attempt = 1; attempt <= maxRetries; attempt++) {
+        try {
+            const response = await ai.models.generateContent({
+                model: modelId,
+                contents: [{
+                    parts: [{ text: text }],
+                }],
+                config: {
+                    responseModalities: [Modality.AUDIO],
+                    speechConfig: {
+                        voiceConfig: {
+                            prebuiltVoiceConfig: { voiceName: 'Kore' },
+                        },
                     },
                 },
-            },
-        });
+            });
 
-        const base64Audio = response.candidates?.[0]?.content?.parts?.[0]?.inlineData?.data;
+            const base64Audio = response.candidates?.[0]?.content?.parts?.[0]?.inlineData?.data;
 
-        if (!base64Audio) {
-            console.warn("No audio data returned from Gemini.");
-            return null;
+            if (!base64Audio) {
+                // If no audio returned, it might be a temporary glitch, try again if not last attempt
+                if (attempt < maxRetries) {
+                    console.warn(`Gemini TTS Attempt ${attempt}: No audio data returned. Retrying...`);
+                    // Short delay before retry
+                    await new Promise(resolve => setTimeout(resolve, 500));
+                    continue; 
+                }
+                console.warn("No audio data returned from Gemini after retries.");
+                return null;
+            }
+
+            const ctx = getAudioContext();
+            const pcmBytes = decodeBase64(base64Audio);
+            
+            return await decodeAudioData(
+                pcmBytes,
+                ctx,
+                24000, 
+                1
+            );
+        } catch (error: any) {
+            // Check if it is the last attempt
+            if (attempt === maxRetries) {
+                console.error("Gemini TTS Generation Error (Final):", error);
+                return null;
+            }
+            
+            console.warn(`Gemini TTS Attempt ${attempt} failed. Retrying... Error: ${error.message || 'Unknown'}`);
+            
+            // Exponential backoff: 500ms, 1000ms, 2000ms...
+            const delay = 500 * Math.pow(2, attempt - 1);
+            await new Promise(resolve => setTimeout(resolve, delay));
         }
-
-        const ctx = getAudioContext();
-        const pcmBytes = decodeBase64(base64Audio);
-        
-        return await decodeAudioData(
-            pcmBytes,
-            ctx,
-            24000, 
-            1
-        );
-    } catch (error) {
-        console.error("Gemini TTS Generation Error:", error);
-        return null;
     }
+    return null;
 }
 
 // Generate TTS Audio Buffer. 
@@ -304,157 +326,264 @@ export const fetchImageForPrompt = async (query: string): Promise<string | null>
     // Cache the URL (browser will cache the image resource itself)
     imageCache.set(query, imageUrl);
     return imageUrl;
-
-  } catch (error) {
-    console.error("Error generating fallback image:", error);
+  } catch (e) {
+    console.error("Error generating image:", e);
     return null;
   }
 };
 
-// New: Gemini function to grade essays
-export const gradeEssayWithGemini = async (userAnswer: string, correctAnswer: string, userName: string): Promise<{ score: number; feedback: string }> => {
+// --- New: Essay Grading ---
+// Returns score (0-100) and feedback
+export const gradeEssayWithGemini = async (
+  userAnswer: string, 
+  correctAnswer: string,
+  userName: string
+): Promise<{ score: number; feedback: string }> => {
   if (!process.env.API_KEY) {
-    console.warn("Gemini API Key is missing.");
-    return { score: 0, feedback: "API Key tidak tersedia untuk penilaian esai." };
+    // Fallback if no API key
+    const isClose = userAnswer.toLowerCase().includes(correctAnswer.toLowerCase());
+    return { 
+      score: isClose ? 100 : 0, 
+      feedback: isClose ? "Jawabanmu mengandung kata kunci yang benar." : `Jawaban yang benar adalah: ${correctAnswer}` 
+    };
   }
+
+  const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+  const modelId = "gemini-2.5-flash";
+
+  const prompt = `
+    Bertindaklah sebagai guru yang ramah bernama Smart Coach.
+    Nama siswa: ${userName}.
+    Pertanyaan: (Tidak perlu konteks pertanyaan, fokus pada kecocokan jawaban).
+    Kunci Jawaban Guru: "${correctAnswer}"
+    Jawaban Siswa: "${userAnswer}"
+
+    Tugas:
+    1. Berikan nilai 0-100 berdasarkan seberapa akurat jawaban siswa terhadap kunci jawaban. Perhatikan makna, bukan hanya kata persis.
+    2. Berikan umpan balik singkat (maksimal 2 kalimat) yang menyemangati siswa dalam Bahasa Indonesia.
+    
+    Format respon JSON:
+    {
+      "score": number,
+      "feedback": "string"
+    }
+  `;
 
   try {
-    const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
-    const model = 'gemini-3-pro-preview'; // Use a pro model for complex reasoning
-
-    const prompt = `Nilai jawaban esai siswa bernama "${userName}" berikut ini.
-    Jawaban siswa: "${userAnswer}"
-    Jawaban yang benar: "${correctAnswer}"
-
-    Abaikan kesalahan ejaan atau tata bahasa kecil, fokus pada esensi dan keakuratan jawaban siswa.
-    Berikan skor antara 0-100 (100 adalah sempurna, 0 adalah tidak relevan sama sekali).
-    
-    Berikan umpan balik konstruktif yang singkat dalam Bahasa Indonesia.
-    PENTING: Dalam umpan balik, sapa siswa dengan nama "${userName}" untuk membuatnya personal.
-    Fokus pada:
-    1. Relevansi jawaban siswa dengan pertanyaan.
-    2. Akurasi informasi yang diberikan.
-    3. Kelengkapan jawaban dibandingkan dengan jawaban yang benar.
-
-    Format output sebagai JSON dengan properti 'score' (number) dan 'feedback' (string).`;
-
-    const response: GenerateContentResponse = await ai.models.generateContent({
-      model: model,
-      contents: prompt,
+    const response = await ai.models.generateContent({
+      model: modelId,
+      contents: [{ parts: [{ text: prompt }] }],
       config: {
-        responseMimeType: "application/json",
-        responseSchema: {
-          type: Type.OBJECT,
-          properties: {
-            score: { type: Type.NUMBER, description: "Skor penilaian 0-100" },
-            feedback: { type: Type.STRING, description: "Umpan balik konstruktif menyebut nama siswa" },
-          },
-          required: ["score", "feedback"],
-        },
-        temperature: 0.2, // Lower temperature for more objective grading
-      },
+        responseMimeType: "application/json"
+      }
     });
 
-    const jsonText = response.text?.trim();
-    if (!jsonText) {
-      throw new Error("No JSON response from Gemini for essay grading.");
+    const text = response.candidates?.[0]?.content?.parts?.[0]?.text;
+    if (text) {
+      const result = JSON.parse(text);
+      return result;
     }
-
-    // Try to parse the JSON, handle potential malformed output
-    try {
-      const parsed = JSON.parse(jsonText);
-      if (typeof parsed.score === 'number' && typeof parsed.feedback === 'string') {
-        return parsed;
-      } else {
-        throw new Error("Malformed JSON structure for essay grading.");
-      }
-    } catch (parseError) {
-      console.error("Error parsing Gemini essay grading JSON:", parseError, "Raw text:", jsonText);
-      // Fallback to simple logic if JSON parsing fails
-      // Fix: Use 'correctAnswer' instead of 'correctAns'
-      const isCorrectFallback = userAnswer.toLowerCase().includes(correctAnswer.toLowerCase());
-      return {
-        score: isCorrectFallback ? 80 : 20,
-        feedback: `(Fallback) ${isCorrectFallback ? `Jawaban Anda relevan, ${userName}.` : `Jawaban Anda kurang relevan, ${userName}.`} Coba periksa kembali.`
-      };
-    }
-
-  } catch (error) {
-    console.error("Error calling Gemini for essay grading:", error);
-    if (
-      (error instanceof Error &&
-        (error.message.includes("RESOURCE_EXHAUSTED") ||
-          error.message.includes("Requested entity was not found."))) ||
-      (typeof (error as any).code === 'number' && (error as any).code === 500) ||
-      (typeof (error as any).code === 'number' && (error as any).code === 6 && (error as any).message.includes("Rpc failed"))
-    ) {
-      alert("Terjadi kesalahan API Gemini. Mohon pastikan API Key Gemini Anda valid dan memiliki billing aktif. Klik OK untuk memilih ulang kunci API.");
-      (window as any).aistudio?.openSelectKey();
-    }
-    return { score: 0, feedback: `Terjadi kesalahan saat menilai esai: ${(error as Error).message}` };
+  } catch (e) {
+    console.error("Error grading essay:", e);
   }
+
+  return { score: 0, feedback: "Maaf, terjadi kesalahan saat menilai. Tapi tetap semangat!" };
 };
 
-// New: Gemini function to generate learning suggestions
+// --- New: Generate Learning Suggestions (Summary) ---
 export const generateLearningSuggestionsWithGemini = async (
-  wrongQuestions: Array<{ question: string; subject: string; chapter: number }>,
+  wrongQuestions: { question: string, subject: string, chapter: number }[],
   level: SchoolLevel,
   userName: string
 ): Promise<string> => {
-  if (!process.env.API_KEY) {
-    console.warn("Gemini API Key is missing.");
-    return "API Key tidak tersedia untuk saran belajar.";
+  if (!process.env.API_KEY || wrongQuestions.length === 0) {
+    return `Kerja bagus, ${userName}! Teruslah berlatih untuk meningkatkan prestasimu.`;
+  }
+
+  const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+  const modelId = "gemini-2.5-flash";
+
+  const wrongList = wrongQuestions.map(q => `- ${q.subject} Bab ${q.chapter}: ${q.question}`).join('\n');
+
+  const prompt = `
+    Bertindaklah sebagai guru pembimbing yang bijaksana dan ramah.
+    Nama siswa: ${userName}.
+    Jenjang: ${level}.
+    
+    Siswa ini baru saja menyelesaikan kuis dan salah menjawab pertanyaan-pertanyaan berikut:
+    ${wrongList}
+
+    Berikan saran belajar singkat (1 paragraf, maks 3 kalimat) yang memotivasi. 
+    Fokuskan saran pada topik/bab yang perlu dipelajari lagi berdasarkan daftar kesalahan di atas.
+    Gunakan bahasa yang hangat dan menyemangati.
+  `;
+
+  try {
+    const response = await ai.models.generateContent({
+      model: modelId,
+      contents: [{ parts: [{ text: prompt }] }],
+    });
+
+    const text = response.candidates?.[0]?.content?.parts?.[0]?.text;
+    return text || `Semangat belajar ${userName}!`;
+  } catch (e) {
+    console.error("Error generating suggestions:", e);
+    return `Tetap semangat belajar, ${userName}!`;
+  }
+};
+
+// Helper: Check viability of a YouTube URL using oEmbed via a CORS-friendly proxy
+const checkYouTubeAvailability = async (url: string): Promise<boolean> => {
+  try {
+    if (!url.match(/^(https?:\/\/)?(www\.)?(youtube\.com|youtu\.be)\/.+$/)) {
+      return false;
+    }
+    // YouTube's direct oEmbed endpoint often blocks CORS from browsers.
+    // We use noembed.com which is CORS-friendly and wraps the oEmbed response.
+    const noembedUrl = `https://noembed.com/embed?url=${encodeURIComponent(url)}`;
+    const response = await fetch(noembedUrl);
+    const data = await response.json();
+    
+    // noembed returns an object. If it has an 'error' property or no title, it's likely invalid.
+    if (data.error) {
+        console.warn("YouTube video unavailable (noembed error):", data.error);
+        return false;
+    }
+    return true;
+  } catch (e) {
+    console.warn("Failed to check video availability:", e);
+    // If fetch fails (e.g. network), we default to true to avoid hiding potentially valid videos due to transient network issues.
+    return true; 
+  }
+};
+
+// --- NEW: Get Remedial Video Suggestion ---
+// Returns Video Title and URL
+export const getRemedialVideoSuggestion = async (
+  questionText: string,
+  subject: string,
+  grade: number
+): Promise<{ title: string; url: string } | null> => {
+  if (!process.env.API_KEY) return null;
+
+  const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+  const modelId = "gemini-2.5-flash"; 
+
+  const prompt = `
+    Carikan satu video YouTube edukasi yang:
+    1. Audio-nya BERBAHASA INDONESIA (Wajib).
+    2. Menjelaskan materi untuk siswa Kelas ${grade} Mata Pelajaran ${subject}.
+    3. Berkaitan dengan pertanyaan yang salah dijawab ini: "${questionText}".
+    4. Pastikan video BUKAN YouTube Shorts (Video reguler).
+    5. Video harus AKTIF dan PUBLIK (bisa di-embed, tidak private).
+    
+    Berikan respons dalam format JSON murni:
+    {
+      "title": "Judul Video",
+      "url": "Link YouTube"
+    }
+  `;
+
+  try {
+    const response = await ai.models.generateContent({
+        model: modelId,
+        contents: [{ parts: [{ text: prompt }] }],
+        config: {
+            tools: [{ googleSearch: {} }],
+        }
+    });
+
+    let text = response.candidates?.[0]?.content?.parts?.[0]?.text;
+    let result = null;
+
+    if (text) {
+        // Improved JSON extraction using Regex to handle potential extra text
+        try {
+            const jsonMatch = text.match(/\{[\s\S]*\}/);
+            if (jsonMatch) {
+                result = JSON.parse(jsonMatch[0]);
+            } else {
+                // Fallback cleanup
+                const cleanText = text.replace(/```json/g, '').replace(/```/g, '').trim();
+                result = JSON.parse(cleanText);
+            }
+        } catch (e) {
+            console.warn("Failed to parse video JSON from text", e);
+        }
+    }
+    
+    // 2. Fallback: If grounding chunks exist, use the first video/web link
+    if (!result || !result.url) {
+        const chunks = response.candidates?.[0]?.groundingMetadata?.groundingChunks;
+        if (chunks && chunks.length > 0) {
+            const webChunk = chunks.find((c: any) => c.web?.uri?.includes("youtube.com") || c.web?.uri?.includes("youtu.be"));
+            if (webChunk && webChunk.web) {
+                result = {
+                    title: webChunk.web.title || "Video Pembelajaran",
+                    url: webChunk.web.uri
+                };
+            }
+        }
+    }
+
+    // 3. VALIDATION STEP
+    if (result && result.url) {
+        const isValid = await checkYouTubeAvailability(result.url);
+        if (isValid) {
+            return result;
+        } else {
+            console.warn(`Suggested video ${result.url} is unavailable/deleted. Skipping.`);
+            return null; 
+        }
+    }
+
+  } catch (e) {
+    console.error("Error getting remedial video:", e);
+  }
+
+  return null;
+}
+
+// --- NEW: Chat with Guru AI ---
+export const chatWithGuru = async (
+  message: string,
+  history: { sender: 'user' | 'model'; text: string }[],
+  currentContext?: string
+): Promise<string> => {
+  if (!process.env.API_KEY) return "Maaf, kunci API tidak ditemukan. Saya tidak bisa menjawab.";
+
+  const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+  const modelId = "gemini-2.5-flash";
+
+  // Construct context string
+  let systemInstruction = "Kamu adalah 'Guru AI', asisten belajar yang ramah, pintar, dan sabar untuk siswa sekolah (SD/SMP/SMA). " +
+    "Gunakan bahasa Indonesia yang baik, sopan, dan mudah dimengerti sesuai usia siswa. " +
+    "Tugasmu adalah membantu siswa memahami pelajaran, menjawab pertanyaan mereka, dan memberikan semangat. " +
+    "JIKA siswa bertanya tentang jawaban soal kuis, JANGAN langsung memberikan kunci jawaban (A, B, C). " +
+    "Sebaliknya, berikan penjelasan konsep atau petunjuk (clue) agar mereka bisa menemukan jawabannya sendiri. " +
+    "Bersikaplah ceria dan suportif.";
+
+  if (currentContext) {
+    systemInstruction += `\n\nKonteks saat ini (Siswa sedang mengerjakan soal ini): "${currentContext}". ` +
+      "Gunakan konteks ini jika pertanyaan siswa berkaitan dengannya.";
   }
 
   try {
-    const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
-    const model = 'gemini-3-pro-preview'; // Use a pro model for better reasoning
-
-    let mistakeSummary = `Siswa bernama ${userName} menjawab semua soal dengan benar.`;
-    if (wrongQuestions.length > 0) {
-      mistakeSummary = `Berikut adalah pertanyaan-pertanyaan yang dijawab SALAH oleh siswa bernama ${userName}:\n`;
-      wrongQuestions.forEach(q => {
-        mistakeSummary += `- Mata Pelajaran ${q.subject} (Bab ${q.chapter}): "${q.question}"\n`;
-      });
-    }
-
-    const prompt = `Analisis kesalahan kuis siswa berikut (Jenjang ${level}):
-    ${mistakeSummary}
-
-    Tugas:
-    Identifikasi **TOPIK SPESIFIK** atau **KONSEP** yang belum dipahami ${userName} berdasarkan isi pertanyaan yang salah tersebut.
-    
-    Berikan saran belajar yang:
-    1. SANGAT SINGKAT (Maksimal 3 kalimat).
-    2. Langsung menyebutkan nama ${userName} dengan ramah.
-    3. Langsung menyebutkan nama topik/materi spesifik yang perlu dipelajari ulang. JANGAN hanya menyebut "Bab 1" atau nama Mata Pelajarannya saja, tapi sebutkan konsep intinya.
-    4. Gunakan Bahasa Indonesia yang santai namun jelas.
-
-    Contoh Output Bagus:
-    "${userName}, sepertinya kamu perlu mempelajari kembali tentang **Hewan Vertebrata** dan ciri-cirinya. Selain itu, perkuat pemahamanmu tentang **perkalian dasar** agar lebih teliti."`;
-
-    const response: GenerateContentResponse = await ai.models.generateContent({
-      model: model,
-      contents: prompt,
+    const chat = ai.chats.create({
+      model: modelId,
       config: {
-        temperature: 0.4, // Balanced creativity and focus
+        systemInstruction: systemInstruction,
       },
+      history: history.map(h => ({
+        role: h.sender,
+        parts: [{ text: h.text }]
+      }))
     });
 
-    return response.text ?? "Tidak dapat memuat saran belajar tambahan.";
-
-  } catch (error) {
-    console.error("Error calling Gemini for learning suggestions:", error);
-    if (
-      (error instanceof Error &&
-        (error.message.includes("RESOURCE_EXHAUSTED") ||
-          error.message.includes("Requested entity was not found."))) ||
-      (typeof (error as any).code === 'number' && (error as any).code === 500) ||
-      (typeof (error as any).code === 'number' && (error as any).code === 6 && (error as any).message.includes("Rpc failed"))
-    ) {
-      alert("Terjadi kesalahan API Gemini. Mohon pastikan API Key Gemini Anda valid dan memiliki billing aktif. Klik OK untuk memilih ulang kunci API.");
-      (window as any).aistudio?.openSelectKey();
-    }
-    return `Terjadi kesalahan saat memuat saran belajar: ${(error as Error).message}`;
+    const result = await chat.sendMessage({ message: message });
+    return result.text || "Maaf, Guru AI sedang berpikir keras dan tidak bisa menjawab saat ini.";
+  } catch (e) {
+    console.error("Error communicating with Guru AI:", e);
+    return "Maaf, terjadi gangguan koneksi. Coba tanya lagi ya!";
   }
 };

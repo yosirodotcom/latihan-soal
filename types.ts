@@ -32,6 +32,10 @@ export interface ChatMessage {
   text: string;
   imagePrompts?: string[];
   isQuestion?: boolean;
+  videoSuggestion?: {
+    title: string;
+    url: string;
+  };
 }
 
 export interface QuizSettings {

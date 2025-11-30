@@ -1,9 +1,8 @@
-
 import React, { useState, useEffect, useRef } from 'react';
-import { Play, StopCircle, Clock, Send, Volume2, Image as ImageIcon, CheckCircle, XCircle, ArrowRight, ChevronDown, ChevronUp, List, BookOpen, GraduationCap, Flame, Lightbulb, Loader2, BrainCircuit, Palette, User } from 'lucide-react';
+import { Play, StopCircle, Clock, Send, Volume2, Image as ImageIcon, CheckCircle, XCircle, ArrowRight, ChevronDown, ChevronUp, List, BookOpen, GraduationCap, Flame, Lightbulb, Loader2, BrainCircuit, Palette, User, Youtube, ExternalLink, MessageCircle, Bot, X, Move } from 'lucide-react';
 import { QUESTIONS_DB, getSubjects, getChapters } from './data';
 import { QuizSettings, QuizState, QuestionData, ChatMessage, SchoolLevel } from './types';
-import { playGeminiTTS, fetchImageForPrompt, playNativeTTS, stopAudio, gradeEssayWithGemini, generateLearningSuggestionsWithGemini, generateGeminiAudio, playAudioBuffer, preloadQuizAssets } from './geminiService';
+import { playGeminiTTS, fetchImageForPrompt, playNativeTTS, stopAudio, gradeEssayWithGemini, generateLearningSuggestionsWithGemini, generateGeminiAudio, playAudioBuffer, preloadQuizAssets, getRemedialVideoSuggestion, chatWithGuru } from './geminiService';
 
 
 
@@ -116,6 +115,234 @@ const ConfettiPop: React.FC = () => {
       }}
     >
       <CheckCircle size={80} />
+    </div>
+  );
+};
+
+// --- NEW: Guru Chat Widget Component (Draggable) ---
+const GuruChatWidget: React.FC<{ currentQuestion: QuestionData | null, themeColor: string }> = ({ currentQuestion, themeColor }) => {
+  const [isOpen, setIsOpen] = useState(false);
+  const [messages, setMessages] = useState<{ sender: 'user' | 'model', text: string }[]>([
+    { sender: 'model', text: "Halo! Saya Guru AI. Ada yang bisa saya bantu? 😊" }
+  ]);
+  const [input, setInput] = useState('');
+  const [loading, setLoading] = useState(false);
+  
+  // Dragging State
+  const [position, setPosition] = useState<{ x: number, y: number } | null>(null);
+  const [isDragging, setIsDragging] = useState(false);
+  const dragOffset = useRef<{ x: number, y: number }>({ x: 0, y: 0 });
+  const hasMoved = useRef(false);
+  
+  // Smart Positioning for Popup
+  const [alignment, setAlignment] = useState<'left' | 'right'>('right');
+  const [verticalAlign, setVerticalAlign] = useState<'top' | 'bottom'>('top'); // 'top' means opens UPWARDS
+
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const theme = PALETTES[themeColor] || PALETTES['Rose'];
+
+  useEffect(() => {
+    if (scrollRef.current) {
+      scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
+    }
+  }, [messages, isOpen]);
+
+  // Determine alignment based on position
+  useEffect(() => {
+    if (position) {
+        const { x, y } = position;
+        const screenW = window.innerWidth;
+        const screenH = window.innerHeight;
+        
+        // Horizontal: If on right half, align right (popup grows left). Else align left.
+        setAlignment(x > screenW / 2 ? 'right' : 'left');
+        
+        // Vertical: If in top half, open DOWNWARDS ('bottom'). Else UPWARDS ('top').
+        setVerticalAlign(y < screenH / 2 ? 'bottom' : 'top');
+    }
+  }, [position, isDragging]);
+
+  const handleSend = async () => {
+    if (!input.trim() || loading) return;
+
+    const userMsg = input.trim();
+    setMessages(prev => [...prev, { sender: 'user', text: userMsg }]);
+    setInput('');
+    setLoading(true);
+
+    // Prepare context
+    const context = currentQuestion 
+      ? `Pertanyaan saat ini: ${currentQuestion.question}. Opsi: ${currentQuestion.options.map(o => o.text).join(', ')}.` 
+      : undefined;
+
+    const response = await chatWithGuru(userMsg, messages, context);
+
+    setMessages(prev => [...prev, { sender: 'model', text: response }]);
+    setLoading(false);
+  };
+
+  const handleMouseDown = (e: React.MouseEvent | React.TouchEvent) => {
+    // Only allow dragging via the button
+    const clientX = 'touches' in e ? e.touches[0].clientX : (e as React.MouseEvent).clientX;
+    const clientY = 'touches' in e ? e.touches[0].clientY : (e as React.MouseEvent).clientY;
+    
+    const target = e.currentTarget as HTMLElement; 
+    const rect = target.getBoundingClientRect();
+    
+    // If not yet positioned (CSS default), set initial state
+    let currentX = position ? position.x : rect.left;
+    let currentY = position ? position.y : rect.top;
+    
+    if (!position) {
+        setPosition({ x: rect.left, y: rect.top });
+        currentX = rect.left;
+        currentY = rect.top;
+    }
+
+    dragOffset.current = {
+        x: clientX - currentX,
+        y: clientY - currentY
+    };
+    
+    setIsDragging(true);
+    hasMoved.current = false;
+  };
+
+  useEffect(() => {
+    const handleMove = (e: MouseEvent | TouchEvent) => {
+        if (!isDragging) return;
+        
+        // Prevent scrolling on touch devices while dragging
+        if (e.cancelable) e.preventDefault();
+
+        const clientX = 'touches' in e ? e.touches[0].clientX : (e as MouseEvent).clientX;
+        const clientY = 'touches' in e ? e.touches[0].clientY : (e as MouseEvent).clientY;
+        
+        const newX = clientX - dragOffset.current.x;
+        const newY = clientY - dragOffset.current.y;
+        
+        // Keep within bounds roughly
+        const maxX = window.innerWidth - 60;
+        const maxY = window.innerHeight - 60;
+        const safeX = Math.max(0, Math.min(maxX, newX));
+        const safeY = Math.max(0, Math.min(maxY, newY));
+
+        setPosition({ x: safeX, y: safeY });
+        
+        // Check if moved significantly to distinguish from click
+        if (Math.abs(newX - (position?.x || 0)) > 5 || Math.abs(newY - (position?.y || 0)) > 5) {
+            hasMoved.current = true;
+        }
+    };
+    
+    const handleUp = () => {
+        setIsDragging(false);
+    };
+
+    if (isDragging) {
+        window.addEventListener('mousemove', handleMove);
+        window.addEventListener('touchmove', handleMove, { passive: false });
+        window.addEventListener('mouseup', handleUp);
+        window.addEventListener('touchend', handleUp);
+    }
+    return () => {
+        window.removeEventListener('mousemove', handleMove);
+        window.removeEventListener('touchmove', handleMove);
+        window.removeEventListener('mouseup', handleUp);
+        window.removeEventListener('touchend', handleUp);
+    };
+  }, [isDragging, position]);
+
+  const toggleOpen = () => {
+    if (!hasMoved.current) {
+        setIsOpen(!isOpen);
+    }
+  };
+
+  return (
+    <div 
+      className="fixed z-50 flex flex-col"
+      // Default: Bottom Right. If dragged, use absolute coordinates.
+      style={position ? { left: position.x, top: position.y } : { bottom: '1rem', right: '1rem' }} 
+    >
+      {/* Chat Window - Positioned relative to button */}
+      {isOpen && (
+        <div 
+            className={`absolute w-80 h-96 bg-white rounded-2xl shadow-2xl flex flex-col border border-gray-200 overflow-hidden animate-fade-in
+                ${alignment === 'right' ? 'right-0' : 'left-0'}
+                ${verticalAlign === 'top' ? 'bottom-16 origin-bottom-right' : 'top-16 origin-top-right'}
+            `}
+        >
+          {/* Header */}
+          <div className={`${theme.primary} p-4 flex justify-between items-center text-white cursor-move`}
+               onMouseDown={(e) => {
+                   // Allow dragging from header too if needed, but for now button only is simpler or pass handlers
+               }}
+          >
+            <div className="flex items-center gap-2">
+              <div className="bg-white/20 p-1.5 rounded-full">
+                <Bot size={20} />
+              </div>
+              <span className="font-bold">Guru AI</span>
+            </div>
+            <button onClick={() => setIsOpen(false)} className="hover:bg-white/20 p-1 rounded-full transition-colors">
+              <X size={18} />
+            </button>
+          </div>
+
+          {/* Messages */}
+          <div ref={scrollRef} className="flex-1 overflow-y-auto p-4 space-y-3 bg-gray-50">
+            {messages.map((msg, idx) => (
+              <div key={idx} className={`flex ${msg.sender === 'user' ? 'justify-end' : 'justify-start'}`}>
+                <div 
+                  className={`max-w-[85%] px-4 py-2 rounded-2xl text-sm leading-relaxed shadow-sm 
+                    ${msg.sender === 'user' 
+                      ? `${theme.primary} text-white rounded-tr-none` 
+                      : 'bg-white text-gray-800 border border-gray-100 rounded-tl-none'}`}
+                >
+                  {msg.text}
+                </div>
+              </div>
+            ))}
+            {loading && (
+              <div className="flex justify-start">
+                <div className="bg-white px-4 py-2 rounded-2xl rounded-tl-none border border-gray-100 shadow-sm flex items-center gap-2 text-gray-400 text-xs">
+                  <Loader2 size={14} className="animate-spin" /> Mengetik...
+                </div>
+              </div>
+            )}
+          </div>
+
+          {/* Input */}
+          <div className="p-3 bg-white border-t border-gray-100 flex gap-2">
+            <input
+              type="text"
+              value={input}
+              onChange={(e) => setInput(e.target.value)}
+              onKeyDown={(e) => e.key === 'Enter' && handleSend()}
+              placeholder="Tanya Guru AI..."
+              className="flex-1 text-sm bg-gray-100 border-none rounded-full px-4 py-2 focus:ring-2 focus:ring-offset-1 focus:ring-gray-300 outline-none transition-all"
+            />
+            <button 
+              onClick={handleSend}
+              disabled={!input.trim() || loading}
+              className={`${theme.primary} text-white p-2 rounded-full hover:opacity-90 disabled:opacity-50 transition-all shadow-md`}
+            >
+              <Send size={16} />
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Toggle Button (Draggable Handle) */}
+      <button 
+        onMouseDown={handleMouseDown}
+        onTouchStart={handleMouseDown}
+        onClick={toggleOpen}
+        className={`${theme.primary} text-white w-14 h-14 rounded-full shadow-lg flex items-center justify-center hover:scale-110 active:scale-95 transition-all duration-300 group cursor-grab active:cursor-grabbing touch-none`}
+      >
+        {isOpen ? <ChevronDown size={28} /> : <Bot size={28} className="animate-bounce-subtle" />}
+      </button>
     </div>
   );
 };
@@ -241,7 +468,7 @@ export default function App() {
     timeLeft: 0,
     isWaitingForNext: false,
     lastAnswerCorrect: null,
-    showConfetti: false, // Controls confetti animation
+    showConfetti: false,
     // Fix: Add animation-related properties to QuizState
     animatingOptionValue: null, 
     animationFeedback: null, 
@@ -309,12 +536,12 @@ export default function App() {
       const currentQ = gameState.currentQuestion;
       let audioKey: string | undefined = undefined;
       
-      // If the message is the current question text, use the pre-loaded key
-      // Strip dynamic remediation text if present to match preload key
-      if (currentQ && lastMsg.text.includes(currentQ.question)) {
-          audioKey = `q_${currentQ.id}`;
-      } else if (lastMsg.id === 'intro') {
+      // Fix: Priority check for 'intro' ID first to ensure full greeting plays
+      if (lastMsg.id === 'intro') {
           audioKey = 'msg_intro'; 
+      } else if (currentQ && lastMsg.text.includes(currentQ.question)) {
+          // If the message contains the current question text, use the pre-loaded key for that question
+          audioKey = `q_${currentQ.id}`;
       }
 
       handlePlayAudio(lastMsg.text, audioKey);
@@ -365,17 +592,67 @@ export default function App() {
     }
   };
 
+  // Helper to extract Video ID from Youtube URL
+  const getVideoId = (url: string) => {
+    const regExp = /^.*(youtu.be\/|v\/|u\/\w\/|embed\/|watch\?v=|&v=)([^#&?]*).*/;
+    const match = url.match(regExp);
+    return (match && match[2].length === 11) ? match[2] : null;
+  };
+
   // Helper to render bold text from markdown-style **text**
+  // Now handles hyperlinks too [text](url)
   const renderFormattedText = (text: string) => {
-    // Split by ** to separate bold parts
-    const parts = text.split('**');
-    return parts.map((part, index) => {
-      // Odd indices are the text between ** **, so they should be bold
-      if (index % 2 === 1) {
-        return <strong key={index} className="font-extrabold text-gray-900">{part}</strong>;
+    // Regex for links [text](url)
+    const linkRegex = /\[([^\]]+)\]\(([^)]+)\)/g;
+    
+    const parts: (string | React.ReactNode)[] = [];
+    let lastIndex = 0;
+    let match;
+
+    while ((match = linkRegex.exec(text)) !== null) {
+      // Text before link
+      if (match.index > lastIndex) {
+        parts.push(text.substring(lastIndex, match.index));
       }
-      // Even indices are normal text
-      return <span key={index}>{part}</span>;
+      
+      // Link part
+      const linkText = match[1];
+      const linkUrl = match[2];
+      parts.push(
+        <a 
+          key={match.index} 
+          href={linkUrl} 
+          target="_blank" 
+          rel="noopener noreferrer"
+          className="text-blue-600 underline hover:text-blue-800 font-medium"
+        >
+          {linkText}
+        </a>
+      );
+      
+      lastIndex = match.index + match[0].length;
+    }
+    
+    // Remaining text after last link
+    if (lastIndex < text.length) {
+      parts.push(text.substring(lastIndex));
+    }
+
+    // Now handle bolding for each string part
+    return parts.map((part, pIdx) => {
+      if (typeof part !== 'string') return part;
+      
+      const boldParts = part.split('**');
+      return (
+        <span key={pIdx}>
+          {boldParts.map((subPart, index) => {
+            if (index % 2 === 1) {
+              return <strong key={index} className="font-extrabold text-gray-900">{subPart}</strong>;
+            }
+            return <span key={index}>{subPart}</span>;
+          })}
+        </span>
+      );
     });
   };
 
@@ -576,7 +853,7 @@ export default function App() {
 
     // This part runs without delay for correctness/feedback logic
     let isCorrect = false;
-    let aiFeedback = "";
+    let uiFeedback = "";
     
     // For audio caching logic
     let audioCacheKey: string | undefined = undefined;
@@ -588,29 +865,42 @@ export default function App() {
             // Pass user name to grading for personalized feedback
             const grade = await gradeEssayWithGemini(userAns, correctAns, name);
             isCorrect = grade.score >= 50;
-            aiFeedback = `${grade.score >= 50 ? '👍' : '🤔'} (Skor: ${grade.score})\n${grade.feedback}`;
+            uiFeedback = `${grade.score >= 50 ? '👍' : '🤔'} (Skor: ${grade.score})\n${grade.feedback}`;
             // Essay feedback is dynamic, so no cache key
-            audioSpeechText = aiFeedback;
+            audioSpeechText = uiFeedback;
         } catch (e) {
             console.error("Error grading essay with Gemini:", e);
             isCorrect = userAns.toLowerCase().includes(correctAns.toLowerCase());
-            aiFeedback = `Gagal menilai dengan AI. Jawaban yang benar adalah: ${correctAns}.`;
-            audioSpeechText = aiFeedback;
+            uiFeedback = `Gagal menilai dengan AI. Jawaban yang benar adalah: ${correctAns}.`;
+            audioSpeechText = uiFeedback;
         }
     } else if (timeUp) {
-        aiFeedback = `Waktu habis, ${name}! Jawaban yang benar adalah: ${correctAns}.`;
-        audioSpeechText = aiFeedback;
+        uiFeedback = `Waktu habis, ${name}! Jawaban yang benar adalah: ${correctAns}.`;
+        audioSpeechText = uiFeedback;
     } else { // For multiple_choice/true_false
         isCorrect = userAns.toLowerCase() === correctAns.toLowerCase();
+        const futureCurrentStreak = isCorrect ? gameState.currentStreak + 1 : 0;
         
         if (isCorrect) {
-            aiFeedback = `Benar, ${name}! 🎉 Hebat sekali!`;
-            // Use the generic correct audio
-            audioCacheKey = "fb_correct";
-            audioSpeechText = `Benar, ${name}! Jawabanmu tepat sekali. Hebat!`; 
+            // Updated: Audio matches the dynamic text variation
+            if (futureCurrentStreak >= 3) {
+                uiFeedback = `Luar biasa, ${name}! 🔥 Streakmu ${futureCurrentStreak}!`;
+                // Dynamic audio including time
+                audioSpeechText = `Luar biasa ${name}! Streakmu mencapai ${futureCurrentStreak}. Kamu menjawab dalam ${timeTaken} detik.`;
+                // Force dynamic generation (no cache key)
+                audioCacheKey = `dynamic_fb_${Date.now()}`;
+            } else {
+                uiFeedback = `Benar, ${name}! 🎉 Hebat sekali!`;
+                // Include time in audio for consistency
+                audioSpeechText = `Benar, ${name}! Jawabanmu tepat. Waktunya ${timeTaken} detik.`;
+                // Force dynamic generation
+                audioCacheKey = `dynamic_fb_${Date.now()}`;
+            }
+            // Generate audio immediately to play after animation
+            generateGeminiAudio(audioSpeechText, audioCacheKey);
         } else {
             // Standard wrong feedback
-            aiFeedback = `Kurang tepat, ${name}. Jawaban yang benar adalah: ${correctAns}. 😔`;
+            uiFeedback = `Kurang tepat, ${name}. Jawaban yang benar adalah: ${correctAns}. 😔`;
             // Use the specific wrong feedback pre-loaded for this question
             audioCacheKey = `fb_wrong_${currentQ.id}`;
             audioSpeechText = `Kurang tepat, ${name}. Jawaban yang benar adalah ${correctAns}.`;
@@ -647,6 +937,30 @@ export default function App() {
         correctAudio.current?.play().catch(e => console.log("Audio play failed", e));
     } else {
         wrongAudio.current?.play().catch(e => console.log("Audio play failed", e));
+        
+        // --- NEW: Trigger Video Recommendation for Wrong Answers ---
+        // Fetch in background, then update state when ready
+        // Only if it's a wrong answer and not time up (optional: can do for time up too)
+        getRemedialVideoSuggestion(currentQ.question, currentQ.subject, currentQ.grade)
+          .then((videoData) => {
+            if (videoData) {
+              setGameState(prevState => {
+                // Check if user is still on the same "wait" screen (not moved to next Q yet)
+                // Actually, we append to history, so it's fine.
+                const videoMsg: ChatMessage = {
+                  id: Date.now().toString() + '_video',
+                  sender: 'teacher',
+                  text: `Jangan khawatir! Untuk membantumu memahami materi ini, coba tonton video ini ya:`,
+                  videoSuggestion: videoData, // Pass the data object directly
+                };
+                return {
+                  ...prevState,
+                  history: [...prevState.history, videoMsg]
+                };
+              });
+            }
+          })
+          .catch(err => console.error("Failed to fetch video suggestion", err));
     }
 
     // 5. Delayed final UI update
@@ -654,16 +968,8 @@ export default function App() {
         // Calculate the streak value that *will be committed* to state
         const futureCurrentStreak = isCorrect ? gameState.currentStreak + 1 : 0; 
 
-        let finalFeedbackText = aiFeedback;
-
-        if (isCorrect && futureCurrentStreak >= 3) {
-            finalFeedbackText = `Luar biasa, ${name}! 🔥 Streakmu ${futureCurrentStreak}! ${aiFeedback.replace(`Benar, ${name}! 🎉 Hebat sekali!`, '')}`;
-        } else if (!isCorrect && gameState.currentStreak > 0) {
-            finalFeedbackText = `Ups, streakmu terhenti di ${gameState.currentStreak}. Jangan menyerah ${name}! ${aiFeedback}`;
-        }
-
         // Append the time string to the final feedback
-        finalFeedbackText += timeString;
+        const finalFeedbackText = uiFeedback + timeString;
 
         const finalTeacherMsg: ChatMessage = {
             id: Date.now().toString() + '_fb',
@@ -696,7 +1002,7 @@ export default function App() {
         });
         setIsProcessing(false); 
         
-        await handlePlayAudio(audioSpeechText || finalFeedbackText, audioCacheKey); 
+        await handlePlayAudio(audioSpeechText, audioCacheKey); 
     }, 2000); 
   };
 
@@ -1302,10 +1608,63 @@ export default function App() {
                           <span className="italic text-gray-500 text-sm">Sedang menilai jawabanmu...</span>
                        </div>
                     ) : (
-                       msg.text
+                       // Handle video links specially or general formatting
+                       renderFormattedText(msg.text)
                     )}
                  </div>
                  
+                 {/* Video Suggestion */}
+                 {msg.videoSuggestion && (
+                    <div className="mt-3 w-full max-w-sm mx-auto rounded-lg overflow-hidden shadow-sm border border-gray-200 bg-white">
+                        {getVideoId(msg.videoSuggestion.url) ? (
+                             <>
+                                <div className="bg-slate-100 px-3 py-2 text-xs font-bold text-slate-700 truncate flex items-center gap-2">
+                                    <Youtube size={14} className="text-red-600" />
+                                    {msg.videoSuggestion.title}
+                                </div>
+                                <div className="relative pb-[56.25%] h-0 bg-black">
+                                    <iframe
+                                        className="absolute top-0 left-0 w-full h-full"
+                                        // Added origin parameter to fix potential playback restrictions (Error 153)
+                                        // Added modestbranding and rel=0 to keep it clean
+                                        src={`https://www.youtube.com/embed/${getVideoId(msg.videoSuggestion.url)}?origin=${window.location.origin}&modestbranding=1&rel=0`}
+                                        title={msg.videoSuggestion.title}
+                                        allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
+                                        allowFullScreen
+                                    ></iframe>
+                                </div>
+                                {/* Prominent fallback button for Error 153 */}
+                                <a 
+                                    href={msg.videoSuggestion.url} 
+                                    target="_blank" 
+                                    rel="noopener noreferrer"
+                                    className="block w-full text-center py-3 px-4 bg-red-600 hover:bg-red-700 text-white font-bold text-sm transition-colors flex items-center justify-center gap-2"
+                                >
+                                    <Youtube size={18} fill="currentColor" />
+                                    Buka di YouTube (Jika video error)
+                                    <ExternalLink size={14} />
+                                </a>
+                             </>
+                        ) : (
+                            <a 
+                                href={msg.videoSuggestion.url} 
+                                target="_blank" 
+                                rel="noopener noreferrer"
+                                className="flex items-center gap-3 p-4 bg-slate-50 hover:bg-slate-100 transition-colors"
+                            >
+                                <div className="w-10 h-10 rounded-full bg-red-100 flex items-center justify-center flex-shrink-0">
+                                    <Youtube size={20} className="text-red-600" />
+                                </div>
+                                <div className="flex-1 min-w-0">
+                                    <div className="text-sm font-bold text-slate-800 truncate">{msg.videoSuggestion.title}</div>
+                                    <div className="text-xs text-slate-500">Klik untuk menonton di YouTube</div>
+                                </div>
+                                <ArrowRight size={16} className="text-slate-400" />
+                            </a>
+                        )}
+                    </div>
+                 )}
+
                  {/* Image Generation */}
                  {msg.imagePrompts && msg.imagePrompts.length > 0 && (
                    <div className="w-full mt-3">
@@ -1555,6 +1914,13 @@ export default function App() {
       {gameState.status === 'quiz' && renderQuiz()}
       {gameState.status === 'analyzing' && renderAnalyzing()}
       {gameState.status === 'summary' && renderSummary()}
+      {/* Floating Guru AI Chat Widget */}
+      {gameState.status !== 'setup' && gameState.status !== 'name_input' && (
+        <GuruChatWidget 
+          currentQuestion={gameState.currentQuestion} 
+          themeColor={settings.themeColor} 
+        />
+      )}
     </>
   );
 }
